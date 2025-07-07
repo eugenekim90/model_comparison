@@ -10,6 +10,14 @@ from weekly_forecasting import weekly_forecasting
 from monthly_forecasting import monthly_forecasting
 from seasonal_analysis import run_seasonal_analysis
 
+# Import Nixtla functionality
+try:
+    from nixtla_models import get_nixtla_client, NIXTLA_AVAILABLE
+    from nixtla import NixtlaClient
+    NIXTLA_MODELS_AVAILABLE = True
+except ImportError:
+    NIXTLA_MODELS_AVAILABLE = False
+
 # Set page config
 st.set_page_config(
     page_title="Model Comparison",
@@ -102,25 +110,78 @@ def main():
                     • **Testing:** {test_weeks} weeks ({test_start_date} to {test_end_date})
                     """)
                 
-                # Model selection
+                # Model selection with recommendations
                 st.sidebar.header("🤖 Select Models")
+                
+                # Add model recommendations based on data length
+                if train_weeks < 15:
+                    st.sidebar.warning("⚠️ **Very Short Data:** TimeGPT and ETS recommended")
+                    recommended_models = ["TimeGPT", "ETS"]
+                elif train_weeks < 26:
+                    st.sidebar.info("📊 **Short Data:** TimeGPT, Random Forest, and ETS recommended")
+                    recommended_models = ["TimeGPT", "Random Forest", "ETS"]
+                else:
+                    st.sidebar.success("✅ **Good Data:** All models suitable")
+                    recommended_models = ["TimeGPT", "LightGBM", "XGBoost", "Random Forest", "Nixtla Statistical", "Nixtla AutoML", "ETS"]
+                
                 models_to_run = []
                 
-                if st.sidebar.checkbox("Linear Regression", value=True):
-                    models_to_run.append("Linear Regression")
-                    
-                if st.sidebar.checkbox("LightGBM", value=True):
+                # Traditional ML Models
+                st.sidebar.markdown("**🔧 Traditional Models**")
+                
+                # Remove Linear Regression and Neural Network options
+    
+    # LightGBM
+                lgb_default = "LightGBM" in recommended_models
+                if st.sidebar.checkbox("LightGBM", value=lgb_default, help="Good for longer data, handles complex patterns"):
                     models_to_run.append("LightGBM")
-                if st.sidebar.checkbox("XGBoost", value=True):
+    
+    # XGBoost
+                xgb_default = "XGBoost" in recommended_models
+                if st.sidebar.checkbox("XGBoost", value=xgb_default, help="Good for longer data, robust to outliers"):
                     models_to_run.append("XGBoost")
-                if st.sidebar.checkbox("Random Forest", value=True):
+    
+    # Random Forest
+                rf_default = "Random Forest" in recommended_models
+                if st.sidebar.checkbox("Random Forest", value=rf_default, help="Good for short-medium data, robust"):
                     models_to_run.append("Random Forest")
-                if st.sidebar.checkbox("ETS", value=True):
+                    
+                # ETS
+                ets_default = "ETS" in recommended_models
+                if st.sidebar.checkbox("ETS", value=ets_default, help="Good for very short data, traditional time series"):
                     models_to_run.append("ETS")
                 
-                # Feature optimization toggle
-                use_optimized = st.sidebar.checkbox("🎯 Use Optimized Features", value=True, 
-                                                   help="Use enhanced features based on seasonal analysis")
+                # Nixtla Models Section
+                st.sidebar.markdown("---")
+                st.sidebar.markdown("**🌟 Nixtla Models**")
+                
+                # Hardcode API key - remove input section
+                if NIXTLA_MODELS_AVAILABLE:
+                    # Hardcode the API key
+                    st.session_state.nixtla_api_key = "nixak-gPfG8SQKObpg2UJVXgF3h0pM8kP4LcvanZAszmiFWsY8raMReEBwf7MNQ5ypWcPQ7bgdomlCuB4mbIcC"
+                    
+                    # TimeGPT
+                    timegpt_default = "TimeGPT" in recommended_models
+                    if st.sidebar.checkbox("TimeGPT", value=timegpt_default, help="Foundation model for time series, zero-shot forecasting (timegpt-1)"):
+                        models_to_run.append("TimeGPT")
+                    
+                    # Nixtla Statistical
+                    nixtla_stats_default = "Nixtla Statistical" in recommended_models
+                    if st.sidebar.checkbox("Nixtla Statistical", value=nixtla_stats_default, help="TimeGPT with standard configuration for statistical analysis"):
+                        models_to_run.append("Nixtla Statistical")
+                    
+                    # Nixtla AutoML
+                    nixtla_automl_default = "Nixtla AutoML" in recommended_models
+                    if st.sidebar.checkbox("Nixtla AutoML", value=nixtla_automl_default, help="TimeGPT with long-horizon configuration for extended forecasting"):
+                        models_to_run.append("Nixtla AutoML")
+                        
+                else:
+                    st.sidebar.error("Nixtla package not found. Please install with: `pip install nixtla`")
+                
+                st.sidebar.markdown("---")
+                
+                # Remove feature optimization toggle - always use base features
+                use_optimized = False  # Always use base features
                 
                 # Run button
                 can_run = train_weeks >= 15 and test_weeks >= 4
@@ -138,7 +199,7 @@ def main():
                     st.sidebar.button("🚀 Run Forecasting", type="primary", disabled=True)
                     st.sidebar.caption("Fix validation errors above to enable")
                 
-                # Create tabs
+                # Create tabs (now 3 tabs instead of 4)
                 tab1, tab2, tab3 = st.tabs(["📅 Weekly Forecasting", "📆 Monthly Forecasting", "🌊 Seasonal Analysis"])
                 
                 with tab1:
@@ -153,8 +214,12 @@ def main():
                         session_optimized = st.session_state.get('use_optimized', True)
                         
                         st.info(f"**Using Split:** {split_info}")
-                        if session_optimized:
-                            st.success("🎯 **Using Optimized Features**")
+                        
+                        # Show selected models
+                        nixtla_models = [m for m in session_models if m in ["TimeGPT", "Nixtla Statistical", "Nixtla AutoML"]]
+                        if nixtla_models:
+                            st.info(f"🌟 **Nixtla Models Selected:** {', '.join(nixtla_models)}")
+                        
                         weekly_forecasting(df, selected_company, selected_state, selected_program, session_models, test_split_date, test_end_date, session_optimized)
                     else:
                         st.info("👆 **Setup Steps:**")
@@ -162,7 +227,8 @@ def main():
                         1. Select **company, state, program**
                         2. Choose **test start/end dates**
                         3. Select **models** to run
-                        4. Click **'Run Forecasting'**
+                        4. **For Nixtla models:** Enter your API key
+                        5. Click **'Run Forecasting'**
                         """)
                 
                 with tab2:
@@ -178,8 +244,13 @@ def main():
                         session_optimized = st.session_state.get('use_optimized', True)
                         
                         st.info(f"**Using Split:** {split_info}")
-                        if session_optimized:
-                            st.success("🎯 **Using Optimized Features**")
+                        # Remove optimized features message since we're always using base features
+                        
+                        # Show selected models
+                        nixtla_models = [m for m in session_models if m in ["TimeGPT", "Nixtla Statistical", "Nixtla AutoML"]]
+                        if nixtla_models:
+                            st.info(f"🌟 **Nixtla Models Selected:** {', '.join(nixtla_models)}")
+                        
                         monthly_forecasting(df, selected_company, selected_state, selected_program, session_models, test_split_date, test_end_date, session_optimized)
                     else:
                         st.info("👆 **Setup Steps:**")
@@ -187,7 +258,8 @@ def main():
                         1. Select **company, state, program**
                         2. Choose **test start/end dates**
                         3. Select **models** to run  
-                        4. Click **'Run Forecasting'**
+                        4. **For Nixtla models:** Enter your API key
+                        5. Click **'Run Forecasting'**
                         
                         **Monthly Process:**
                         - Train models on weekly data

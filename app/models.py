@@ -2,7 +2,8 @@ import streamlit as st
 import lightgbm as lgb
 import xgboost as xgb
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.feature_selection import SelectKBest, f_regression
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
@@ -10,128 +11,159 @@ import numpy as np
 import warnings
 warnings.filterwarnings('ignore')
 
+# Import Nixtla models
+try:
+    from nixtla_models import run_nixtla_models, NIXTLA_AVAILABLE
+    NIXTLA_MODELS_AVAILABLE = True
+except ImportError:
+    NIXTLA_MODELS_AVAILABLE = False
+
 def run_models(X_train, y_train, X_test, ts_data, models_to_run, use_optimized=True):
-    """Run selected models with optimization based on seasonal analysis insights"""
+    """Run selected models and return results"""
+    
+    # Always use base features, no feature selection
+    use_optimized = False
+    
     results = {}
+    
+    # Remove verbose training messages
+    
+    # Convert to pandas for sklearn compatibility
+    if hasattr(X_train, 'to_pandas'):
+        X_train = X_train.to_pandas()
+        X_test = X_test.to_pandas()
+    
+    # Fill any remaining NaN values
+    X_train = X_train.fillna(0)
+    X_test = X_test.fillna(0)
+    
+    # Remove any infinite values
+    X_train = X_train.replace([np.inf, -np.inf], 0)
+    X_test = X_test.replace([np.inf, -np.inf], 0)
+    
+    # Feature selection for certain models - REMOVED since using base features only
+    n_features = min(20, len(X_train.columns))  # Use top 20 or all available features
     
     forecast_periods = len(X_test)
     
-    # Basic info
-    st.info(f"Training {len(models_to_run)} models with {len(X_train)} training samples and {len(X_test)} test samples")
+    # Assess data quality for adaptive model selection
+    train_length = len(X_train)
+    is_short_series = train_length < 26  # Less than 6 months
+    is_very_short = train_length < 15   # Less than 3.5 months
     
-    # Feature selection and preprocessing for linear models (based on seasonal analysis)
-    if use_optimized and any(model in ["Linear Regression", "LightGBM", "XGBoost"] for model in models_to_run):
-        try:
-            # Apply feature selection if optimized features are enabled
-            n_features = min(20, X_train.shape[1])
-            if n_features > 5:  # Only apply feature selection if we have enough features
-                selector = SelectKBest(score_func=f_regression, k=n_features)
-                X_train_selected = selector.fit_transform(X_train, y_train)
-                X_test_selected = selector.transform(X_test)
-                
-                # Get selected feature names
-                feature_names = X_train.columns.tolist()
-                selected_features = [feature_names[i] for i in selector.get_support(indices=True)]
-                
-                st.info(f"🎯 Optimized: Using top {len(selected_features)} features based on seasonal analysis")
-            else:
-                # Use all features if we don't have enough for selection
-                X_train_selected = X_train.values
-                X_test_selected = X_test.values
-                selected_features = X_train.columns.tolist()
-                st.info(f"🎯 Optimized: Using all {len(selected_features)} features (not enough for selection)")
-            
-            # Standardize features for linear models
-            scaler = StandardScaler()
-            X_train_scaled = scaler.fit_transform(X_train_selected)
-            X_test_scaled = scaler.transform(X_test_selected)
-            
-        except Exception as e:
-            st.warning(f"Feature optimization failed, using all features: {str(e)}")
-            X_train_selected = X_train.values
-            X_test_selected = X_test.values
-            X_train_scaled = X_train.values
-            X_test_scaled = X_test.values
-            selected_features = X_train.columns.tolist()
-    else:
-        X_train_selected = X_train.values
-        X_test_selected = X_test.values
-        X_train_scaled = X_train.values
-        X_test_scaled = X_test.values
-        selected_features = X_train.columns.tolist()
+    # Remove data quality messages
     
-    # Linear Regression (best performer from seasonal analysis - 0.24% MAPE!)
-    if "Linear Regression" in models_to_run:
-        try:
-            model = LinearRegression()
-            model.fit(X_train_scaled, y_train)
-            pred = model.predict(X_test_scaled)
-            # Ensure no negative predictions
-            pred = np.maximum(pred, 0)
-            results["Linear Regression"] = {
-                "predictions": pred, 
-                "model": model,
-                "feature_names": selected_features,
-                "feature_importance": dict(zip(selected_features, np.abs(model.coef_))) if hasattr(model, 'coef_') else None
-            }
-            st.success("✅ Linear Regression trained successfully")
-        except Exception as e:
-            st.error(f"Linear Regression failed: {str(e)}")
+    # Basic preprocessing for models that need scaled features
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
     
-    # LightGBM (with optimized features)
+    selected_features = X_train.columns.tolist()
+    
+    # Remove Linear Regression and Neural Network sections
+    
+    # LightGBM (with adaptive parameters)
     if "LightGBM" in models_to_run:
         try:
+            # Adaptive parameters based on data quality
+            if is_very_short:
+                n_estimators = 50
+                learning_rate = 0.15
+                reg_alpha = 0.5
+                reg_lambda = 0.5
+            elif is_short_series:
+                n_estimators = 75
+                learning_rate = 0.12
+                reg_alpha = 0.3
+                reg_lambda = 0.3
+            else:
+                n_estimators = 100
+                learning_rate = 0.1
+                reg_alpha = 0.1
+                reg_lambda = 0.1
+            
             model = lgb.LGBMRegressor(
-                n_estimators=150,  # Slightly increased
-                learning_rate=0.08,  # Slightly lower for stability
+                n_estimators=n_estimators,
+                learning_rate=learning_rate,
                 random_state=42, 
                 verbose=-1,
-                reg_alpha=0.1,  # L1 regularization
-                reg_lambda=0.1   # L2 regularization
+                reg_alpha=reg_alpha,
+                reg_lambda=reg_lambda
             )
-            model.fit(X_train_selected, y_train)
-            pred = model.predict(X_test_selected)
+            model.fit(X_train_scaled, y_train)
+            pred = model.predict(X_test_scaled)
             pred = np.maximum(pred, 0)
             results["LightGBM"] = {"predictions": pred, "model": model, "feature_names": selected_features}
         except Exception as e:
             st.error(f"LightGBM failed: {str(e)}")
     
-    # XGBoost (with optimized features)
+    # XGBoost (with adaptive parameters)
     if "XGBoost" in models_to_run:
         try:
+            # Adaptive parameters based on data quality
+            if is_very_short:
+                n_estimators = 50
+                learning_rate = 0.15
+                reg_alpha = 0.5
+                reg_lambda = 0.5
+            elif is_short_series:
+                n_estimators = 100
+                learning_rate = 0.1
+                reg_alpha = 0.2
+                reg_lambda = 0.2
+            else:
+                n_estimators = 150
+                learning_rate = 0.08
+                reg_alpha = 0.1
+                reg_lambda = 0.1
+            
             model = xgb.XGBRegressor(
-                n_estimators=150,  # Slightly increased
-                learning_rate=0.08,  # Slightly lower for stability
+                n_estimators=n_estimators,
+                learning_rate=learning_rate,
                 random_state=42, 
                 verbosity=0,
-                reg_alpha=0.1,  # L1 regularization
-                reg_lambda=0.1   # L2 regularization
+                reg_alpha=reg_alpha,
+                reg_lambda=reg_lambda
             )
-            model.fit(X_train_selected, y_train)
-            pred = model.predict(X_test_selected)
+            model.fit(X_train_scaled, y_train)
+            pred = model.predict(X_test_scaled)
             pred = np.maximum(pred, 0)
             results["XGBoost"] = {"predictions": pred, "model": model, "feature_names": selected_features}
         except Exception as e:
             st.error(f"XGBoost failed: {str(e)}")
     
-    # Random Forest
+    # Random Forest (with adaptive parameters)
     if "Random Forest" in models_to_run:
         try:
+            # Adaptive parameters based on data quality
+            if is_very_short:
+                n_estimators = 50
+                max_depth = 5
+                min_samples_split = 8
+            elif is_short_series:
+                n_estimators = 75
+                max_depth = 8
+                min_samples_split = 6
+            else:
+                n_estimators = 100
+                max_depth = 10
+                min_samples_split = 5
+            
             model = RandomForestRegressor(
-                n_estimators=100, 
+                n_estimators=n_estimators,
                 random_state=42, 
                 n_jobs=-1,
-                max_depth=10,  # Prevent overfitting
-                min_samples_split=5
+                max_depth=max_depth,
+                min_samples_split=min_samples_split
             )
-            model.fit(X_train_selected, y_train)
-            pred = model.predict(X_test_selected)
+            model.fit(X_train_scaled, y_train)
+            pred = model.predict(X_test_scaled)
             pred = np.maximum(pred, 0)
             results["Random Forest"] = {"predictions": pred, "model": model, "feature_names": selected_features}
-            if use_optimized:
-                st.success("✅ Random Forest trained successfully")
         except Exception as e:
             st.error(f"Random Forest failed: {str(e)}")
+    
+    # Remove Neural Network section
     
     # ETS (traditional time series model)
     if "ETS" in models_to_run:
@@ -147,13 +179,24 @@ def run_models(X_train, y_train, X_test, ts_data, models_to_run, use_optimized=T
         except Exception as e:
             st.error(f"ETS failed: {str(e)}")
     
+    # Nixtla Models (TimeGPT, Statistical, AutoML)
+    nixtla_models = [model for model in models_to_run if model in ["TimeGPT", "Nixtla Statistical", "Nixtla AutoML"]]
+    if nixtla_models and NIXTLA_MODELS_AVAILABLE:
+        try:
+            # Remove verbose Nixtla messages
+            nixtla_results = run_nixtla_models(ts_data, forecast_periods, nixtla_models)
+            results.update(nixtla_results)
+            
+        except Exception as e:
+            st.error(f"Nixtla models failed: {str(e)}")
+    
+    elif nixtla_models and not NIXTLA_MODELS_AVAILABLE:
+        st.warning("⚠️ Nixtla models selected but not available. Please install nixtla package.")
+    
     return results
 
 def get_model_feature_importance(model_name, model, feature_names):
-    """Get feature importance for tree-based and linear models"""
+    """Get feature importance for tree-based models"""
     if model_name in ["LightGBM", "XGBoost", "Random Forest"] and hasattr(model, 'feature_importances_'):
         return dict(zip(feature_names, model.feature_importances_))
-    elif model_name == "Linear Regression" and hasattr(model, 'coef_'):
-        # For linear regression, use absolute coefficients as importance
-        return dict(zip(feature_names, np.abs(model.coef_)))
     return None 

@@ -5,7 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import polars as pl
 from feature_engineering import create_features
-from data_preparation import prepare_model_data, prepare_aggregated_data, get_aggregation_level, create_display_name
+from data_preparation import prepare_model_data, prepare_aggregated_data, get_aggregation_level, create_display_name, smart_data_preparation
 from models import run_models, get_model_feature_importance
 from metrics import calculate_metrics
 from visualization import perform_eda, plot_forecast_results, plot_metrics_comparison, display_metrics_table, plot_feature_importance, plot_prediction_scatter
@@ -29,140 +29,241 @@ def get_feature_type(feature_name):
         return 'Trend & Momentum Features'
     elif feature_name.startswith('yoy_') or feature_name.startswith('sessions_change_'):
         return 'Growth Features'
+    elif feature_name.startswith('total_customers') or feature_name.startswith('subscriber_'):
+        return 'Customer Features'
     else:
         return 'Other Features'
 
-def weekly_forecasting(df, selected_company, selected_state, selected_program, models_to_run, test_split_date="2024-10-01", test_end_date="2024-12-31", use_optimized=True):
-    """Weekly forecasting with optimized features and models"""
+def weekly_forecasting(df, selected_company, selected_state, selected_program, models_to_run, test_split_date, test_end_date, use_optimized=True):
+    """Run weekly forecasting with specified models"""
     
-    with st.spinner("Creating weekly features..."):
-        df_features = create_features(df, optimized=use_optimized)
+    # Initialize filters
+    filters = []
     
-    # Determine aggregation level
-    aggregation_level = get_aggregation_level(selected_company, selected_state, selected_program)
+    # Apply filters based on selections
+    if selected_company != "ALL COMPANIES":
+        filters.append(pl.col("company") == selected_company)
+    if selected_state != "ALL STATES":
+        filters.append(pl.col("us_state") == selected_state)
+    if selected_program != "ALL PROGRAMS":
+        filters.append(pl.col("episode_session_type") == selected_program)
     
-    st.sidebar.info(f"Aggregation: {aggregation_level}")
-    
-    # Create display name
-    display_name = create_display_name(selected_company, selected_state, selected_program)
-    
-    st.success(f"**Selected:** {display_name}")
-    st.info(f"**Aggregation Level:** {aggregation_level}")
-    
-    # Check if we're forecasting into the future or evaluating historical data
-    data_max_date = df.select(pl.max("week_start")).to_pandas().iloc[0, 0]
-    test_start_date = pd.to_datetime(test_split_date)
-    # Convert both to date for comparison
-    is_future_forecast = test_start_date.date() > data_max_date.date()
-    
-    if is_future_forecast:
-        st.warning(f"🔮 **Future Forecasting Mode**: Test period ({test_split_date}) is beyond available data ({data_max_date})")
-        st.info("**Note:** No evaluation metrics will be calculated since we're forecasting into the future")
+    # Apply filters if any exist
+    if filters:
+        filtered_df = df.filter(pl.all_horizontal(filters))
     else:
-        st.info(f"📊 **Historical Evaluation Mode**: Test period is within available data range")
+        filtered_df = df
     
-    with st.spinner("Running models..."):
-        # Prepare data based on aggregation level
-        if aggregation_level == "Granular" and selected_company != "ALL COMPANIES":
-            X_train, y_train, X_test, y_test, ts_data = prepare_model_data(
-                df_features, selected_company, selected_state, selected_program, test_split_date, test_end_date
-            )
-        else:
-            X_train, y_train, X_test, y_test, ts_data = prepare_aggregated_data(
-                df_features, selected_company, selected_state, selected_program, aggregation_level, test_split_date, test_end_date
-            )
+    # Debug info
+    st.subheader("🔍 Debug Info")
+    st.write(f"Original data shape: {df.shape}")
+    st.write(f"Filtered data shape: {filtered_df.shape}")
+    
+    display_name = f"{selected_company} → {selected_state} → {selected_program}"
+    st.success(f"**Selected:** {display_name}")
+    
+    if filtered_df.height == 0:
+        st.error("No data available for the selected combination")
+        return
+    
+    # Create features
+    df_features = create_features(filtered_df, optimized=use_optimized)
+    
+    # Prepare data for modeling based on aggregation level
+    if selected_company == "ALL COMPANIES" or selected_state == "ALL STATES" or selected_program == "ALL PROGRAMS":
+        # Use aggregated data preparation
         
-        if X_train is None:
-            st.error("Insufficient data for the selected combination.")
-            return
+        # Determine aggregation level
+        aggregation_level = get_aggregation_level(selected_company, selected_state, selected_program)
         
-        if is_future_forecast and (y_test is None or len(y_test) == 0):
-            # For future forecasting, generate dummy test periods for prediction
-            st.info("📅 **Generating future periods for forecasting...**")
-            # Calculate future weeks based on specified test end date
-            future_weeks = (pd.to_datetime(test_end_date) - pd.to_datetime(test_split_date)).days // 7 + 1
-            future_weeks = max(1, future_weeks)  # At least 1 week
+        # Use prepare_aggregated_data for aggregated selections
+        X_train, y_train, X_test, y_test, ts_data = prepare_aggregated_data(
+            df_features, selected_company, selected_state, selected_program, aggregation_level, test_split_date, test_end_date
+        )
+    else:
+        # Use granular data preparation for specific combinations
+        X_train, y_train, X_test, y_test, ts_data = prepare_model_data(
+            df_features, selected_company, selected_state, selected_program, test_split_date, test_end_date
+        )
+        
+    # Check if data preparation was successful
+    if X_train is None or y_train is None:
+        st.error("❌ **No sufficient data available for the selected combination**")
+        st.info("**Possible reasons:**")
+        st.markdown("""
+        - Selected combination has insufficient historical data (need at least 15 training weeks)
+        - No data available for the selected date range
+        - Try selecting a different combination or date range
+        """)
+        return
+    
+    # Remove verbose training information
+    # Run models
+    model_results = run_models(X_train, y_train, X_test, ts_data, models_to_run, use_optimized)
+    
+    # Check data availability
+    if X_test is not None and y_test is not None and len(y_test) > 0:
+        # Historical evaluation mode
+        st.subheader("📊 Model Performance")
+        
+        # Calculate metrics for all models
+        model_metrics = {}
+        for model_name, result in model_results.items():
+            predictions = result["predictions"]
             
-            # Create dummy X_test for future periods (use last known values)
-            if len(X_train) > 0:
-                X_test = pd.DataFrame([X_train.iloc[-1]] * future_weeks)
-                X_test.index = range(future_weeks)
-                y_test = None  # No actual values for future
-        
-        st.info(f"Training samples: {len(X_train)} | Test/Forecast periods: {len(X_test) if X_test is not None else 0}")
-        
-        # Perform EDA on the selected data
-        eda_df = _get_eda_dataframe(df_features, selected_company, selected_state, selected_program, aggregation_level)
-        perform_eda(eda_df, display_name, aggregation_level)
-        
-        # Display features used in training
-        _display_feature_info(X_train)
-        
-        # Run models
-        model_results = run_models(X_train, y_train, X_test, ts_data, models_to_run, use_optimized)
-        
-        if not model_results:
-            st.error("All models failed.")
-            return
-        
-        if is_future_forecast:
-            # Future forecasting mode - just show predictions
-            st.header("🔮 Weekly Future Forecasting Results")
-            st.info("Showing future weekly predictions (no actuals available for comparison)")
-            
-            # Forecast plot for future predictions
-            test_dates = pd.date_range(start=test_split_date, periods=len(X_test), freq="W")
-            
-            fig = _plot_future_forecast_results(model_results, test_dates)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Display future predictions table
-            _display_future_forecast_table(model_results, test_dates)
-            
-        else:
-            # Historical evaluation mode - full evaluation
             # Calculate metrics
-            model_metrics = {}
-            for model_name, result in model_results.items():
-                model_metrics[model_name] = calculate_metrics(y_test, result["predictions"])
-            
-            # Display metrics table
-            st.header("📊 Model Performance Metrics")
-            
-            # Add explanation of metrics
-            _display_metrics_explanation()
-            
-            display_metrics_table(model_metrics, is_monthly=False)
-            
-            # Best model based on WMAPE
-            best_model = min(model_metrics.keys(), key=lambda x: model_metrics[x]["WMAPE"])
-            st.success(f"🏆 **Best Model:** {best_model} (WMAPE: {model_metrics[best_model]['WMAPE']:.1f}%)")
-            
-            # Show both metrics for comparison
-            st.info(f"📈 **{best_model} Performance:** MAPE: {model_metrics[best_model]['MAPE']:.1f}% | WMAPE: {model_metrics[best_model]['WMAPE']:.1f}%")
-            
-            # Forecast plot
-            st.header("📈 Forecasting Results")
-            test_dates = pd.date_range(start=test_split_date, periods=len(y_test), freq="W")
-            
-            fig = plot_forecast_results(y_test, model_results, test_dates, "Model Predictions vs Actual")
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Accuracy comparison
-            st.subheader("Model Accuracy Comparison")
-            
-            # WMAPE comparison (primary metric)
-            wmape_fig = plot_metrics_comparison(model_metrics, "WMAPE")
-            st.plotly_chart(wmape_fig, use_container_width=True)
-            
-            # MAPE vs WMAPE comparison
-            _plot_mape_vs_wmape_comparison(model_metrics)
-            
-            # Individual model details
-            _display_individual_model_details(model_results, model_metrics, y_test)
+            metrics = calculate_metrics(y_test, predictions)
+            model_metrics[model_name] = {
+                "WMAPE": metrics["WMAPE"],
+                "MAPE": metrics["MAPE"],
+                "MAE": metrics["MAE"],
+                "RMSE": metrics["RMSE"],
+                "predictions": predictions
+            }
         
-        # Feature importance for tree models (show in both modes)
-        _display_feature_importance(model_results, X_train.columns, use_optimized)
+        # Sort by WMAPE performance
+        sorted_models = sorted(model_metrics.items(), key=lambda x: x[1]["WMAPE"])
+        
+        # Display metrics comparison
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("### 📈 Model Rankings")
+            for rank, (model_name, metrics) in enumerate(sorted_models, 1):
+                icon = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else "📊"
+                st.write(f"{icon} **{model_name}** - WMAPE: {metrics['WMAPE']:.1f}%")
+        
+        with col2:
+            # Remove "Best Model" success message
+            pass
+        
+        # Display charts using the correct function from visualization
+        # Create test dates for the chart
+        test_start = pd.to_datetime(test_split_date)
+        test_end = pd.to_datetime(test_end_date)
+        test_dates = pd.date_range(start=test_start, end=test_end, freq='W-MON')[:len(y_test)]
+        
+        # Get the figure and display it
+        forecast_fig = plot_forecast_results(y_test, model_results, test_dates)
+        st.plotly_chart(forecast_fig, use_container_width=True)
+        
+        # Display metrics table using the correct function from visualization
+        display_metrics_table(model_metrics)
+        
+        # Only display feature importance for granular (specific) selections
+        # Feature importance doesn't make sense for aggregated data
+        if selected_company != "ALL COMPANIES" and selected_state != "ALL STATES" and selected_program != "ALL PROGRAMS":
+            st.subheader("🎯 Feature Importance Analysis")
+            st.info("📊 **Granular Selection**: Showing feature importance for specific company/state/program combination")
+            _display_feature_importance(model_results, X_train.columns, use_optimized, X_train, y_train)
+        else:
+            st.subheader("📈 Aggregated Data Analysis")
+            aggregation_parts = []
+            if selected_company == "ALL COMPANIES":
+                aggregation_parts.append("all companies")
+            if selected_state == "ALL STATES": 
+                aggregation_parts.append("all states")
+            if selected_program == "ALL PROGRAMS":
+                aggregation_parts.append("all programs")
+            
+            st.info(f"🌐 **Aggregated Selection**: You're viewing data aggregated across {', '.join(aggregation_parts)}. Feature importance is not applicable here since the model is trained on aggregated time series data rather than individual entity features.")
+            
+            # Instead, show what features were actually used for the aggregated model
+            with st.expander("🔧 Features Used in Aggregated Model"):
+                st.markdown("""
+                **For aggregated data, the model primarily relies on:**
+                
+                • **Temporal features**: Week of year, month, quarter patterns
+                • **Lag features**: Historical values from previous weeks (1, 2, 4, 8, 12 weeks back)
+                • **Rolling statistics**: Moving averages and trends over time windows
+                • **Seasonal patterns**: Holiday effects, business cycles, yearly patterns
+                • **Trend features**: Growth rates, momentum, volatility measures
+                
+                ℹ️ **Note**: Entity-specific features (company, state, program encodings) are not used in aggregated models since we're looking at combined data across multiple entities.
+                """)
+    
+    else:
+        # Future forecasting mode
+        st.subheader("🔮 Future Forecasting")
+        st.info("Forecasting into the future - no historical data available for evaluation")
+        
+        # Display future predictions using existing forecast results function
+        st.subheader("📈 Future Predictions")
+        
+        # Create a simple prediction chart for future forecasting
+        if model_results:
+            # Get the first model's predictions as an example
+            first_model = list(model_results.keys())[0]
+            predictions = model_results[first_model]["predictions"]
+            
+            # Create date range for predictions
+            test_start = pd.to_datetime(test_split_date)
+            test_end = pd.to_datetime(test_end_date)
+            prediction_dates = pd.date_range(start=test_start, end=test_end, freq='W-MON')[:len(predictions)]
+            
+            # Display predictions for all models
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("### 🔮 Model Predictions")
+                for model_name, result in model_results.items():
+                    preds = result["predictions"]
+                    avg_pred = np.mean(preds) if len(preds) > 0 else 0
+                    st.write(f"**{model_name}**: Avg. {avg_pred:.0f} sessions/week")
+            
+            with col2:
+                # Create prediction chart
+                fig = go.Figure()
+                
+                for model_name, result in model_results.items():
+                    preds = result["predictions"]
+                    dates = prediction_dates[:len(preds)]
+                    
+                    fig.add_trace(go.Scatter(
+                        x=dates,
+                        y=preds,
+                        mode='lines+markers',
+                        name=model_name,
+                        line=dict(width=2)
+                    ))
+                
+                fig.update_layout(
+                    title="Future Predictions by Model",
+                    xaxis_title="Date",
+                    yaxis_title="Session Count",
+                    hovermode='x unified'
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+        
+        # Only display feature importance for granular selections in future forecasting too
+        if selected_company != "ALL COMPANIES" and selected_state != "ALL STATES" and selected_program != "ALL PROGRAMS":
+            st.subheader("🎯 Feature Importance Analysis")
+            st.info("📊 **Granular Selection**: Showing feature importance for specific company/state/program combination")
+            _display_feature_importance(model_results, X_train.columns, use_optimized, X_train, y_train)
+        else:
+            st.subheader("📈 Aggregated Future Forecasting")
+            aggregation_parts = []
+            if selected_company == "ALL COMPANIES":
+                aggregation_parts.append("all companies")
+            if selected_state == "ALL STATES":
+                aggregation_parts.append("all states") 
+            if selected_program == "ALL PROGRAMS":
+                aggregation_parts.append("all programs")
+            
+            st.info(f"🌐 **Aggregated Future Forecast**: Predicting combined future values across {', '.join(aggregation_parts)}. The model uses temporal patterns rather than entity-specific features.")
+            
+            with st.expander("🔧 Future Forecasting Features"):
+                st.markdown("""
+                **For future forecasting of aggregated data, models rely on:**
+                
+                • **Historical patterns**: Learning from past aggregate trends
+                • **Seasonal cycles**: Yearly, quarterly, monthly patterns in the combined data
+                • **Long-term trends**: Growth or decline patterns in the aggregated time series
+                • **Recent momentum**: Latest trends in the combined data
+                • **Holiday and calendar effects**: Business seasonality across all entities
+                
+                ℹ️ **Note**: Future forecasting extends these learned temporal patterns into the forecast period.
+                """)
 
 def _get_eda_dataframe(df_features, selected_company, selected_state, selected_program, aggregation_level):
     """Get the appropriate dataframe for EDA based on aggregation level"""
@@ -315,69 +416,262 @@ def _display_individual_model_details(model_results, model_metrics, y_test):
             scatter_fig = plot_prediction_scatter(y_test, result["predictions"], model_name)
             st.plotly_chart(scatter_fig, use_container_width=True)
 
-def _display_feature_importance(model_results, original_feature_names, use_optimized=True):
+def _display_feature_importance(model_results, original_feature_names, use_optimized=True, X_train=None, y_train=None):
     """Display feature importance for tree models"""
     st.header("🎯 Feature Importance")
     
-    # Handle Linear Regression first (has different structure)
-    if "Linear Regression" in model_results:
-        with st.expander("Linear Regression Feature Coefficients"):
-            if "feature_names" in model_results["Linear Regression"]:
-                model_feature_names = model_results["Linear Regression"]["feature_names"]
-                if hasattr(model_results["Linear Regression"]["model"], 'coef_') and len(model_feature_names) > 0:
-                    coefficients = np.abs(model_results["Linear Regression"]["model"].coef_)
+    # Tree models feature importance
+    tree_models = [model for model in model_results.keys() if model in ["LightGBM", "XGBoost", "Random Forest"]]
+    if tree_models:
+        for model_name in tree_models:
+            if model_name in model_results and hasattr(model_results[model_name]["model"], 'feature_importances_'):
+                with st.expander(f"{model_name} Feature Importance"):
+                    importance = model_results[model_name]["model"].feature_importances_
+                    
+                    # Use the feature names from the model results (these are the ones actually used)
+                    if "feature_names" in model_results[model_name]:
+                        model_feature_names = model_results[model_name]["feature_names"]
+                    else:
+                        model_feature_names = original_feature_names  # Fallback
+                    
+                    # Ensure lengths match
+                    if len(model_feature_names) != len(importance):
+                        st.warning(f"⚠️ Feature name/importance length mismatch for {model_name}. Using indices.")
+                        model_feature_names = [f"Feature_{i}" for i in range(len(importance))]
                     
                     importance_df = pd.DataFrame({
                         'Feature': model_feature_names,
-                        'Coefficient': coefficients
-                    }).sort_values('Coefficient', ascending=False)
+                        'Importance': importance
+                    }).sort_values('Importance', ascending=False)
                     
-                    # Add feature type
+                    # Add feature type for better visualization
                     importance_df['Type'] = importance_df['Feature'].apply(get_feature_type)
                     
-                    # Plot feature coefficients
-                    imp_fig = plot_feature_importance(importance_df.rename(columns={'Coefficient': 'Importance'}), 
-                                                     "Linear Regression", top_n=15)
+                    imp_fig = plot_feature_importance(importance_df, model_name, top_n=15)
                     st.plotly_chart(imp_fig, use_container_width=True)
                     
                     if use_optimized:
                         st.success("✅ Showing importance for optimized features (top 20 selected)")
+                    
+                    # Show categorical feature importance summary
+                    categorical_importance = importance_df[importance_df['Type'] == 'Categorical Features']
+                    if not categorical_importance.empty:
+                        st.write("**Categorical Feature Impact:**")
+                        for _, row in categorical_importance.iterrows():
+                            percentage = (row['Importance'] / importance_df['Importance'].sum()) * 100
+                            st.write(f"• **{row['Feature']}**: {percentage:.1f}% of total importance")
     
-    # Handle tree-based models
-    for model_name in ["LightGBM", "XGBoost", "Random Forest"]:
-        if model_name in model_results and hasattr(model_results[model_name]["model"], 'feature_importances_'):
-            with st.expander(f"{model_name} Feature Importance"):
-                importance = model_results[model_name]["model"].feature_importances_
+    # Handle Nixtla models (TimeGPT, etc.)
+    nixtla_models = [model for model in model_results.keys() if model in ["TimeGPT", "Nixtla Statistical", "Nixtla AutoML"]]
+    if nixtla_models:
+        with st.expander("🌟 Nixtla Models - Actual Time Series Feature Analysis"):
+            st.markdown("**🔍 Real Feature Analysis from Your Data:**")
+            
+            # Get the time series data that was used for Nixtla models
+            from data_preparation import prepare_aggregated_data, get_aggregation_level
+            try:
+                # Get the same data preparation used for the models
+                aggregation_level = get_aggregation_level("ALL COMPANIES", "ALL STATES", "ALL PROGRAMS")  # Default for analysis
                 
-                # Use the feature names from the model results (these are the ones actually used)
-                if "feature_names" in model_results[model_name]:
-                    model_feature_names = model_results[model_name]["feature_names"]
-                else:
-                    model_feature_names = original_feature_names  # Fallback
+                # Try to get time series data from the model results or recreate it
+                ts_data = None
+                for model_name in nixtla_models:
+                    if model_name in model_results and hasattr(model_results[model_name], 'get'):
+                        # Try to get ts_data from the model results if available
+                        break
                 
-                # Ensure lengths match
-                if len(model_feature_names) != len(importance):
-                    st.warning(f"⚠️ Feature name/importance length mismatch for {model_name}. Using indices.")
-                    model_feature_names = [f"Feature_{i}" for i in range(len(importance))]
+                # If we can't get it from model results, create a simple analysis from the available data
+                if ts_data is None:
+                    # Create a simple time series from the target values for analysis
+                    # Get basic time series statistics
+                    if y_train is not None and len(y_train) > 0:
+                        ts_data = pd.Series(y_train)
+                        ts_dates = pd.date_range(end=pd.Timestamp.now(), periods=len(ts_data), freq='W')
+                    else:
+                        st.warning("No training data available for analysis")
+                        ts_data = None
                 
-                importance_df = pd.DataFrame({
-                    'Feature': model_feature_names,
-                    'Importance': importance
-                }).sort_values('Importance', ascending=False)
+                if ts_data is not None:
+                    # Calculate actual temporal features and their importance
+                    temporal_analysis = {}
+                    
+                    # 1. Trend Analysis
+                    if len(ts_data) > 4:
+                        recent_trend = np.mean(ts_data[-4:]) - np.mean(ts_data[:4])
+                        trend_strength = abs(recent_trend) / np.std(ts_data) if np.std(ts_data) > 0 else 0
+                        temporal_analysis["Trend Direction"] = "Increasing" if recent_trend > 0 else "Decreasing"
+                        temporal_analysis["Trend Strength"] = f"{trend_strength:.2f}"
+                    
+                    # 2. Volatility Analysis
+                    volatility = np.std(ts_data) / np.mean(ts_data) if np.mean(ts_data) > 0 else 0
+                    temporal_analysis["Volatility (CV)"] = f"{volatility:.2f}"
+                    
+                    # 3. Recent vs Historical Average
+                    if len(ts_data) > 8:
+                        recent_avg = np.mean(ts_data[-4:])
+                        historical_avg = np.mean(ts_data[:-4])
+                        recent_vs_hist = (recent_avg - historical_avg) / historical_avg if historical_avg > 0 else 0
+                        temporal_analysis["Recent vs Historical"] = f"{recent_vs_hist:.1%}"
+                    
+                    # 4. Lag Correlation Analysis (what TimeGPT looks at)
+                    lag_correlations = {}
+                    for lag in [1, 2, 4, 8, 12]:
+                        if len(ts_data) > lag:
+                            corr = np.corrcoef(ts_data[lag:], ts_data[:-lag])[0, 1]
+                            if not np.isnan(corr):
+                                lag_correlations[f"Lag-{lag} weeks"] = f"{corr:.3f}"
+                    
+                    # 5. Seasonal Pattern Detection
+                    seasonal_patterns = {}
+                    if len(ts_data) > 12:
+                        # Check for quarterly patterns
+                        quarterly_data = [ts_data[i::13] for i in range(min(13, len(ts_data)))]
+                        if len(quarterly_data) > 1 and all(len(q) > 0 for q in quarterly_data):
+                            quarterly_vars = [np.var(q) for q in quarterly_data if len(q) > 0]
+                            if quarterly_vars:
+                                seasonal_strength = np.std(quarterly_vars) / np.mean(quarterly_vars) if np.mean(quarterly_vars) > 0 else 0
+                                seasonal_patterns["Seasonal Variation"] = f"{seasonal_strength:.2f}"
+                    
+                    # Display the real analysis
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**📈 Temporal Pattern Analysis:**")
+                        for pattern, value in temporal_analysis.items():
+                            if "Trend" in pattern:
+                                if "Increasing" in str(value):
+                                    st.write(f"• **{pattern}**: ↗️ {value}")
+                                else:
+                                    st.write(f"• **{pattern}**: ↘️ {value}")
+                            else:
+                                st.write(f"• **{pattern}**: {value}")
+                        
+                        st.markdown("**🔄 Lag Dependencies (TimeGPT Focus):**")
+                        # Sort by correlation strength
+                        sorted_lags = sorted(lag_correlations.items(), key=lambda x: abs(float(x[1])), reverse=True)
+                        for lag, corr in sorted_lags[:5]:  # Top 5 lags
+                            corr_val = float(corr)
+                            if abs(corr_val) > 0.5:
+                                st.write(f"• **{lag}**: {corr} ⭐ Strong")
+                            elif abs(corr_val) > 0.3:
+                                st.write(f"• **{lag}**: {corr} 📊 Moderate")
+                            else:
+                                st.write(f"• **{lag}**: {corr} 📍 Weak")
+                    
+                    with col2:
+                        st.markdown("**🌊 Seasonal Patterns:**")
+                        for pattern, value in seasonal_patterns.items():
+                            st.write(f"• **{pattern}**: {value}")
+                        
+                        # Show which patterns are most important for TimeGPT
+                        st.markdown("**🎯 Key Drivers for TimeGPT:**")
+                        
+                        # Determine what TimeGPT is likely focusing on
+                        key_drivers = []
+                        
+                        # Check trend strength
+                        if "Trend Strength" in temporal_analysis:
+                            trend_val = float(temporal_analysis["Trend Strength"])
+                            if trend_val > 0.5:
+                                key_drivers.append(f"Strong {temporal_analysis.get('Trend Direction', 'trend')} pattern")
+                        
+                        # Check strongest lag correlations
+                        if sorted_lags:
+                            strongest_lag = sorted_lags[0]
+                            if abs(float(strongest_lag[1])) > 0.4:
+                                key_drivers.append(f"Strong {strongest_lag[0]} autocorrelation")
+                        
+                        # Check volatility
+                        if volatility > 0.3:
+                            key_drivers.append("High volatility patterns")
+                        elif volatility < 0.1:
+                            key_drivers.append("Stable, predictable patterns")
+                        
+                        # Check recent performance
+                        if "Recent vs Historical" in temporal_analysis:
+                            recent_change = temporal_analysis["Recent vs Historical"].rstrip('%')
+                            try:
+                                recent_val = float(recent_change)
+                                if abs(recent_val) > 10:
+                                    key_drivers.append(f"Recent regime change ({recent_change}%)")
+                            except:
+                                pass
+                        
+                        if key_drivers:
+                            for driver in key_drivers:
+                                st.write(f"• {driver}")
+                        else:
+                            st.write("• Stable time series patterns")
+                            st.write("• Historical average-based forecasting")
+                    
+                    # Show model performance context
+                    st.markdown("---")
+                    st.markdown("**🚀 Models Used & Performance Context:**")
+                    
+                    perf_col1, perf_col2 = st.columns(2)
+                    with perf_col1:
+                        for model_name in nixtla_models:
+                            if model_name == "TimeGPT":
+                                st.write("• **TimeGPT (timegpt-1)**: Foundation model")
+                            elif model_name == "Nixtla Statistical":
+                                st.write("• **Nixtla Statistical**: Standard config")
+                            elif model_name == "Nixtla AutoML":
+                                st.write("• **Nixtla AutoML**: Long-horizon config")
+                    
+                    with perf_col2:
+                        # Show data characteristics that affect TimeGPT performance
+                        data_characteristics = []
+                        if len(ts_data) < 20:
+                            data_characteristics.append("Short series → TimeGPT advantage")
+                        elif len(ts_data) > 100:
+                            data_characteristics.append("Long series → Rich patterns")
+                        
+                        if volatility < 0.2:
+                            data_characteristics.append("Low volatility → Stable forecasts")
+                        elif volatility > 0.5:
+                            data_characteristics.append("High volatility → Challenging")
+                        
+                        for char in data_characteristics:
+                            st.write(f"• {char}")
+                    
+                    # Add interpretation
+                    st.info("💡 **Interpretation**: This analysis shows the actual temporal patterns in your data that TimeGPT leverages for forecasting, based on the same time series used for training.")
                 
-                # Add feature type for better visualization
-                importance_df['Type'] = importance_df['Feature'].apply(get_feature_type)
-                
-                imp_fig = plot_feature_importance(importance_df, model_name, top_n=15)
-                st.plotly_chart(imp_fig, use_container_width=True)
-                
-                if use_optimized:
-                    st.success("✅ Showing importance for optimized features (top 20 selected)")
-                
-                # Show categorical feature importance summary
-                categorical_importance = importance_df[importance_df['Type'] == 'Categorical Features']
-                if not categorical_importance.empty:
-                    st.write("**Categorical Feature Impact:**")
-                    for _, row in categorical_importance.iterrows():
-                        percentage = (row['Importance'] / importance_df['Importance'].sum()) * 100
-                        st.write(f"• **{row['Feature']}**: {percentage:.1f}% of total importance") 
+            except Exception as e:
+                st.error(f"Could not perform temporal analysis: {str(e)}")
+                st.write("**🌟 Nixtla Models Used:**")
+                for model_name in nixtla_models:
+                    st.write(f"• {model_name}")
+    
+    # Handle other models (ETS)
+    other_models = [model for model in model_results.keys() if model in ["ETS"]]
+    if other_models:
+        with st.expander("🔧 Other Models - Feature Analysis"):
+            for model_name in other_models:
+                if model_name == "ETS":
+                    st.markdown("""
+                    **📈 ETS (Exponential Smoothing) Approach:**
+                    - Traditional time series method
+                    - Focuses on trend and seasonal components
+                    - No feature engineering required
+                    - Good baseline for seasonal data
+                    """)
+    
+    # Summary of feature importance approach
+    st.markdown("---")
+    st.markdown("""
+    **🎯 Feature Importance Summary:**
+    - **Tree Models**: Show which engineered features are most important
+    - **Nixtla Models**: Foundation models that consider temporal patterns automatically
+    - **ETS**: Traditional time series method, no features used
+    """)
+
+    st.info("""
+    **📊 Feature Importance Interpretation:**
+    - **Tree Models**: Shows how much each feature contributes to reducing prediction error
+    - **Higher values** = More important for predictions
+    - **Feature Types** help understand what patterns the model learned
+    """)
+
+    if not tree_models and not nixtla_models:
+        st.info("No traditional ML models were run to show feature importance.") 

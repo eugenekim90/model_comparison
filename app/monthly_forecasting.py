@@ -9,9 +9,13 @@ from data_preparation import prepare_model_data, prepare_aggregated_data, get_ag
 from models import run_models
 from metrics import calculate_metrics
 from visualization import display_metrics_table, plot_metrics_comparison
+from weekly_forecasting import _display_feature_importance
 
 def monthly_forecasting(df, selected_company, selected_state, selected_program, models_to_run, test_split_date="2024-10-01", test_end_date="2024-12-31", use_optimized=True):
     """Monthly evaluation approach: Weekly models → Aggregate weekly predictions → Monthly evaluation"""
+    
+    # Always use base features, ignore the use_optimized parameter
+    use_optimized = False
     
     # Create display name
     display_name = create_display_name(selected_company, selected_state, selected_program)
@@ -38,10 +42,11 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
         st.info(f"📊 **Historical Evaluation Mode**: Test period is within available data range")
     
     with st.spinner("Running weekly models..."):
-        # Prepare data using weekly approach
+        # Use smart data preparation for granular level
         if aggregation_level == "Granular" and selected_company != "ALL COMPANIES":
-            X_train, y_train, X_test, y_test, ts_data = prepare_model_data(
-                df_features, selected_company, selected_state, selected_program, test_split_date, test_end_date
+            from data_preparation import smart_data_preparation
+            X_train, y_train, X_test, y_test, ts_data = smart_data_preparation(
+                df, selected_company, selected_state, selected_program, test_split_date, test_end_date
             )
         else:
             X_train, y_train, X_test, y_test, ts_data = prepare_aggregated_data(
@@ -110,6 +115,39 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
             # Display prediction table
             _display_future_predictions_table(monthly_predictions)
             
+            # Only display feature importance for granular selections in monthly future forecasting
+            if selected_company != "ALL COMPANIES" and selected_state != "ALL STATES" and selected_program != "ALL PROGRAMS":
+                st.subheader("🎯 Feature Importance Analysis")
+                st.info("📊 **Granular Selection**: Showing feature importance for specific company/state/program combination")
+                _display_feature_importance(weekly_model_results, X_train.columns, use_optimized, X_train, y_train)
+            else:
+                st.subheader("📈 Aggregated Monthly Future Forecasting")
+                aggregation_parts = []
+                if selected_company == "ALL COMPANIES":
+                    aggregation_parts.append("all companies")
+                if selected_state == "ALL STATES":
+                    aggregation_parts.append("all states")
+                if selected_program == "ALL PROGRAMS":
+                    aggregation_parts.append("all programs")
+                
+                st.info(f"🌐 **Aggregated Monthly Forecast**: Predicting combined monthly values across {', '.join(aggregation_parts)}. Weekly models are trained on temporal patterns, then predictions are aggregated to monthly level.")
+                
+                with st.expander("🔧 Monthly Aggregation Process"):
+                    st.markdown("""
+                    **For monthly forecasting of aggregated data:**
+                    
+                    1. **Weekly Model Training**: Models learn from aggregated weekly patterns
+                    2. **Weekly Predictions**: Generate future weekly predictions 
+                    3. **Monthly Aggregation**: Sum weekly predictions within each month
+                    4. **Monthly Evaluation**: Compare monthly aggregated predictions vs actuals
+                    
+                    • **Temporal features**: Week/month/quarter patterns in aggregated data
+                    • **Seasonal cycles**: Holiday and business seasonality across all entities
+                    • **Long-term trends**: Growth patterns in the combined time series
+                    
+                    ℹ️ **Note**: Entity-specific features are not applicable for aggregated monthly forecasting.
+                    """)
+            
         else:
             # Historical evaluation mode - full evaluation
             # Aggregate weekly predictions and actuals to monthly level
@@ -154,6 +192,41 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
             
             # Show weekly vs monthly comparison
             _display_aggregation_info(len(y_test), len(monthly_actuals), weekly_forecast_dates, monthly_dates)
+            
+            # Only display feature importance for granular selections in monthly historical evaluation
+            if selected_company != "ALL COMPANIES" and selected_state != "ALL STATES" and selected_program != "ALL PROGRAMS":
+                st.subheader("🎯 Feature Importance Analysis")
+                st.info("📊 **Granular Selection**: Showing feature importance for specific company/state/program combination")
+                _display_feature_importance(weekly_model_results, X_train.columns, use_optimized, X_train, y_train)
+            else:
+                st.subheader("📈 Aggregated Monthly Evaluation")
+                aggregation_parts = []
+                if selected_company == "ALL COMPANIES":
+                    aggregation_parts.append("all companies")
+                if selected_state == "ALL STATES":
+                    aggregation_parts.append("all states")
+                if selected_program == "ALL PROGRAMS":
+                    aggregation_parts.append("all programs")
+                
+                st.info(f"🌐 **Aggregated Monthly Evaluation**: Evaluated monthly performance across {', '.join(aggregation_parts)}. Weekly models were trained on temporal patterns and aggregated to monthly level.")
+                
+                with st.expander("🔧 Monthly Evaluation Process"):
+                    st.markdown("""
+                    **For monthly evaluation of aggregated data:**
+                    
+                    1. **Weekly Training**: Models learned from aggregated weekly temporal patterns
+                    2. **Weekly Predictions**: Generated weekly predictions for test period
+                    3. **Monthly Aggregation**: Summed weekly predictions within each month
+                    4. **Monthly Actuals**: Summed weekly actuals within each month
+                    5. **Monthly Metrics**: Calculated performance on monthly aggregated level
+                    
+                    **Key patterns learned by models:**
+                    • **Temporal cycles**: Week/month/quarter patterns in aggregated data
+                    • **Seasonal trends**: Holiday and business seasonality across all entities
+                    • **Long-term growth**: Trends in the combined time series data
+                    
+                    ℹ️ **Note**: Individual entity features are not used in aggregated monthly evaluation.
+                    """)
 
 def _aggregate_to_monthly(weekly_model_results, weekly_actuals, weekly_dates):
     """Aggregate weekly predictions and actuals to monthly level"""

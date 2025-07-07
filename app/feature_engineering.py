@@ -4,28 +4,55 @@ import numpy as np
 import streamlit as st
 
 def create_features(df, optimized=True):
-    """Create comprehensive features for forecasting including advanced seasonal patterns"""
+    """Create features for time series forecasting"""
     
-    # Check what columns are available for sorting
+    # Always use base features, ignore optimized parameter
+    # Sort data to ensure proper lag calculations
     available_cols = df.columns
-    sort_cols = ["week_start"]  # Always sort by week_start at minimum
     
-    # Add grouping columns if they exist (for raw data)
-    if "company" in available_cols:
-        sort_cols.insert(0, "company")
-    if "us_state" in available_cols:
-        sort_cols.insert(-1, "us_state")
-    if "episode_session_type" in available_cols:
-        sort_cols.insert(-1, "episode_session_type")
+    # Determine sort columns based on what's available
+    if all(col in available_cols for col in ["company", "us_state", "episode_session_type"]):
+        sort_cols = ["company", "us_state", "episode_session_type", "week_start"]
+    else:
+        sort_cols = ["week_start"]
     
-    # Create lag features
     df = df.sort(sort_cols)
     
-    # Use optimized features based on seasonal analysis insights
-    if optimized:
-        return create_optimized_features_enhanced(df)
+    # Create basic features
+    df = _add_time_features(df)
+    df = _add_lag_features(df)
+    df = _add_rolling_features(df)
     
-    # Check what columns are available for grouping  
+    # Only add categorical encoding if grouping columns exist
+    if all(col in available_cols for col in ["company", "us_state", "episode_session_type"]):
+        df = _add_categorical_encoding(df)
+    
+    return df
+
+def _add_time_features(df):
+    """Add basic time-based features"""
+    
+    df = df.with_columns([
+        # Basic time features
+        pl.col("week_start").dt.week().alias("week_of_year"),
+        pl.col("week_start").dt.month().alias("month"),
+        pl.col("week_start").dt.quarter().alias("quarter"),
+        pl.col("week_start").dt.year().alias("year"),
+        pl.col("week_start").dt.weekday().alias("weekday"),
+        
+        # Seasonal indicators (quarters)
+        pl.when(pl.col("week_start").dt.month().is_in([12, 1, 2])).then(1).otherwise(0).alias("is_winter"),
+        pl.when(pl.col("week_start").dt.month().is_in([3, 4, 5])).then(1).otherwise(0).alias("is_spring"),
+        pl.when(pl.col("week_start").dt.month().is_in([6, 7, 8])).then(1).otherwise(0).alias("is_summer"),
+        pl.when(pl.col("week_start").dt.month().is_in([9, 10, 11])).then(1).otherwise(0).alias("is_fall"),
+    ])
+    
+    return df
+
+def _add_lag_features(df):
+    """Add lag features"""
+    
+    # Check what columns are available for grouping
     available_cols = df.columns
     group_cols = []
     
@@ -38,7 +65,7 @@ def create_features(df, optimized=True):
         group_cols.append("episode_session_type")
     
     # Basic lag features (weeks)
-    for lag in [1, 2, 4, 8, 12]:
+    for lag in [1, 2, 4, 8, 12, 26, 52]:
         if group_cols:
             df = df.with_columns([
                 pl.col("session_count")
@@ -53,21 +80,22 @@ def create_features(df, optimized=True):
                 .alias(f"lag_{lag}"),
             ])
     
-    # Extended lag features for yearly patterns
-    for lag in [26, 52, 78, 104]:  # 6 months, 1 year, 1.5 years, 2 years
-        if group_cols:
-            df = df.with_columns([
-                pl.col("session_count")
-                .shift(lag)
-                .over(group_cols)
-                .alias(f"lag_{lag}"),
-            ])
-        else:
-            df = df.with_columns([
-                pl.col("session_count")
-                .shift(lag)
-                .alias(f"lag_{lag}"),
-            ])
+    return df
+
+def _add_rolling_features(df):
+    """Add rolling statistics features"""
+    
+    # Check what columns are available for grouping
+    available_cols = df.columns
+    group_cols = []
+    
+    # Add grouping columns if they exist (for raw data)
+    if "company" in available_cols:
+        group_cols.append("company")
+    if "us_state" in available_cols:
+        group_cols.append("us_state")
+    if "episode_session_type" in available_cols:
+        group_cols.append("episode_session_type")
     
     # Rolling statistics (short-term)
     for window in [4, 8, 12]:
@@ -103,97 +131,6 @@ def create_features(df, optimized=True):
                 pl.col("session_count").shift(1).rolling_min(window)
                 .alias(f"rolling_min_{window}"),
             ])
-    
-    # Long-term rolling statistics (seasonal patterns)
-    for window in [26, 52]:  # 6 months, 1 year
-        if group_cols:
-            df = df.with_columns([
-                pl.col("session_count").shift(1).rolling_mean(window)
-                .over(group_cols)
-                .alias(f"rolling_mean_{window}"),
-                
-                pl.col("session_count").shift(1).rolling_std(window)
-                .over(group_cols)
-                .alias(f"rolling_std_{window}"),
-            ])
-        else:
-            df = df.with_columns([
-                pl.col("session_count").shift(1).rolling_mean(window)
-                .alias(f"rolling_mean_{window}"),
-                
-                pl.col("session_count").shift(1).rolling_std(window)
-                .alias(f"rolling_std_{window}"),
-            ])
-    
-    # Year-over-year growth rates
-    if group_cols:
-        df = df.with_columns([
-            # YoY growth (52 weeks ago)
-            ((pl.col("session_count") - pl.col("session_count").shift(52).over(group_cols)) /
-             (pl.col("session_count").shift(52).over(group_cols) + 1))
-            .alias("yoy_growth_52w"),
-            
-            # YoY growth (26 weeks ago) 
-            ((pl.col("session_count") - pl.col("session_count").shift(26).over(group_cols)) /
-             (pl.col("session_count").shift(26).over(group_cols) + 1))
-            .alias("yoy_growth_26w"),
-        ])
-    else:
-        df = df.with_columns([
-            # YoY growth (52 weeks ago)
-            ((pl.col("session_count") - pl.col("session_count").shift(52)) /
-             (pl.col("session_count").shift(52) + 1))
-            .alias("yoy_growth_52w"),
-            
-            # YoY growth (26 weeks ago) 
-            ((pl.col("session_count") - pl.col("session_count").shift(26)) /
-             (pl.col("session_count").shift(26) + 1))
-            .alias("yoy_growth_26w"),
-        ])
-    
-    # Customer features
-    if group_cols:
-        df = df.with_columns([
-            (pl.col("subscriber_count") + pl.col("non_subscriber_count")).alias("total_customers"),
-            (pl.col("subscriber_count") / (pl.col("subscriber_count") + pl.col("non_subscriber_count") + 1)).alias("subscriber_ratio"),
-            
-            # Customer growth patterns
-            (pl.col("subscriber_count").shift(1) - pl.col("subscriber_count").shift(2))
-            .over(group_cols)
-            .alias("subscriber_growth"),
-            
-            (pl.col("non_subscriber_count").shift(1) - pl.col("non_subscriber_count").shift(2))
-            .over(group_cols)
-            .alias("non_subscriber_growth"),
-        ])
-    else:
-        df = df.with_columns([
-            (pl.col("subscriber_count") + pl.col("non_subscriber_count")).alias("total_customers"),
-            (pl.col("subscriber_count") / (pl.col("subscriber_count") + pl.col("non_subscriber_count") + 1)).alias("subscriber_ratio"),
-            
-            # Customer growth patterns
-            (pl.col("subscriber_count").shift(1) - pl.col("subscriber_count").shift(2))
-            .alias("subscriber_growth"),
-            
-            (pl.col("non_subscriber_count").shift(1) - pl.col("non_subscriber_count").shift(2))
-            .alias("non_subscriber_growth"),
-        ])
-    
-    # Categorical encodings (only if we have grouping columns)
-    if group_cols:
-        df = _add_categorical_encoding(df)
-    
-    # Enhanced time features with seasonal patterns
-    df = _add_enhanced_time_features(df)
-    
-    # Holiday and special event features
-    df = _add_holiday_features(df)
-    
-    # Trend and momentum features
-    df = _add_trend_features(df)
-    
-    # Fill null values
-    df = _clean_features(df)
     
     return df
 
@@ -333,12 +270,12 @@ def _add_trend_features(df):
             .over(group_cols)
             .alias("volatility_8w"),
             
-            # Momentum indicators
-            (pl.col("session_count").shift(1) / 
+            # Momentum indicators (FIXED - properly normalized)
+            ((pl.col("session_count").shift(1) - pl.col("session_count").shift(1).rolling_mean(4).over(group_cols)) / 
              (pl.col("session_count").shift(1).rolling_mean(4).over(group_cols) + 1))
             .alias("momentum_4w"),
             
-            (pl.col("session_count").shift(1) / 
+            ((pl.col("session_count").shift(1) - pl.col("session_count").shift(1).rolling_mean(12).over(group_cols)) / 
              (pl.col("session_count").shift(1).rolling_mean(12).over(group_cols) + 1))
             .alias("momentum_12w"),
         ])
@@ -366,12 +303,12 @@ def _add_trend_features(df):
              (pl.col("session_count").shift(1).rolling_mean(8) + 1))
             .alias("volatility_8w"),
             
-            # Momentum indicators
-            (pl.col("session_count").shift(1) / 
+            # Momentum indicators (FIXED - properly normalized)
+            ((pl.col("session_count").shift(1) - pl.col("session_count").shift(1).rolling_mean(4)) / 
              (pl.col("session_count").shift(1).rolling_mean(4) + 1))
             .alias("momentum_4w"),
             
-            (pl.col("session_count").shift(1) / 
+            ((pl.col("session_count").shift(1) - pl.col("session_count").shift(1).rolling_mean(12)) / 
              (pl.col("session_count").shift(1).rolling_mean(12) + 1))
             .alias("momentum_12w"),
         ])
@@ -690,16 +627,16 @@ def create_optimized_features_enhanced(df):
                 .alias(f"lag_{lag}"),
             ])
     
-    # Add year-over-year growth features
+    # Add year-over-year growth features (FIXED - no data leakage)
     if group_cols:
         df = df.with_columns([
-            ((pl.col("session_count") - pl.col("session_count").shift(52).over(group_cols)) /
+            ((pl.col("session_count").shift(1) - pl.col("session_count").shift(52).over(group_cols)) /
              (pl.col("session_count").shift(52).over(group_cols) + pl.lit(1)))
             .alias("yoy_growth_52w"),
         ])
     else:
         df = df.with_columns([
-            ((pl.col("session_count") - pl.col("session_count").shift(52)) /
+            ((pl.col("session_count").shift(1) - pl.col("session_count").shift(52)) /
              (pl.col("session_count").shift(52) + pl.lit(1)))
             .alias("yoy_growth_52w"),
         ])
@@ -719,7 +656,7 @@ def create_optimized_features_enhanced(df):
                 .over(group_cols)
                 .alias(f"sessions_lag_{lag}w"),
                 
-                ((pl.col("session_count") - pl.col("session_count").shift(lag).over(group_cols)) /
+                ((pl.col("session_count").shift(1) - pl.col("session_count").shift(lag).over(group_cols)) /
                  (pl.col("session_count").shift(lag).over(group_cols) + pl.lit(1)))
                 .alias(f"sessions_change_{lag}w"),
             ])
@@ -729,7 +666,7 @@ def create_optimized_features_enhanced(df):
                 .shift(lag)
                 .alias(f"sessions_lag_{lag}w"),
                 
-                ((pl.col("session_count") - pl.col("session_count").shift(lag)) /
+                ((pl.col("session_count").shift(1) - pl.col("session_count").shift(lag)) /
                  (pl.col("session_count").shift(lag) + pl.lit(1)))
                 .alias(f"sessions_change_{lag}w"),
             ])
@@ -808,8 +745,8 @@ def create_optimized_features_enhanced(df):
             .over(group_cols)
             .alias("recovery_momentum"),
             
-            # 12-week momentum
-            (pl.col("session_count").shift(1) / 
+            # 12-week momentum (FIXED - properly normalized)
+            ((pl.col("session_count").shift(1) - pl.col("session_count").shift(1).rolling_mean(12).over(group_cols)) / 
              (pl.col("session_count").shift(1).rolling_mean(12).over(group_cols) + pl.lit(1)))
             .alias("momentum_12w"),
             
@@ -832,8 +769,8 @@ def create_optimized_features_enhanced(df):
               (pl.col("session_count").shift(2) - pl.col("session_count").shift(3))) / pl.lit(2))
             .alias("recovery_momentum"),
             
-            # 12-week momentum
-            (pl.col("session_count").shift(1) / 
+            # 12-week momentum (FIXED - properly normalized)
+            ((pl.col("session_count").shift(1) - pl.col("session_count").shift(1).rolling_mean(12)) / 
              (pl.col("session_count").shift(1).rolling_mean(12) + pl.lit(1)))
             .alias("momentum_12w"),
             

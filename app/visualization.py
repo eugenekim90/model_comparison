@@ -187,7 +187,7 @@ def plot_metrics_comparison(model_metrics, metric_name="WMAPE"):
     return fig
 
 def plot_feature_importance(importance_df, model_name, top_n=15):
-    """Create feature importance plot"""
+    """Create feature importance plot with robust handling of extreme values"""
     
     # Add feature type for better visualization
     def get_feature_type(feature_name):
@@ -202,10 +202,24 @@ def plot_feature_importance(importance_df, model_name, top_n=15):
         else:
             return 'Other Features'
     
+    # Robust handling of extreme values
+    if 'Importance' in importance_df.columns:
+        # Replace infinite values
+        importance_df = importance_df.replace([np.inf, -np.inf], np.nan).dropna()
+        
+        # Cap extreme values at 95th percentile to prevent chart distortion
+        if len(importance_df) > 3:  # Only cap if we have enough data points
+            cap_value = importance_df['Importance'].quantile(0.95)
+            max_reasonable = cap_value * 2  # Allow some headroom
+            importance_df['Importance'] = importance_df['Importance'].clip(upper=max_reasonable)
+    
     importance_df['Type'] = importance_df['Feature'].apply(get_feature_type)
     
+    # Take top features after capping
+    top_features = importance_df.head(top_n)
+    
     fig = px.bar(
-        importance_df.head(top_n),
+        top_features,
         x='Importance',
         y='Feature',
         orientation='h',
@@ -213,6 +227,19 @@ def plot_feature_importance(importance_df, model_name, top_n=15):
         title=f"Top {top_n} Features - {model_name}",
         color_discrete_sequence=px.colors.qualitative.Set3
     )
+    
+    # Check if we capped any values and add a note
+    if len(importance_df) > 3:
+        cap_value = importance_df['Importance'].quantile(0.95) * 2
+        max_value = top_features['Importance'].max()
+        if max_value >= cap_value * 0.95:  # Close to cap
+            fig.add_annotation(
+                text="Note: Extreme values capped for better visualization",
+                xref="paper", yref="paper",
+                x=0.99, y=0.01,
+                showarrow=False,
+                font=dict(size=10, color="gray")
+            )
     
     return fig
 
