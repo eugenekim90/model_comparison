@@ -79,18 +79,8 @@ def prepare_model_data(df, company, state, program, test_start="2024-10-01", tes
             except:
                 pass
     
-    # Remove verbose status messages - just display essential info
-    # Display feature info
-    # st.info(f"📊 **Features Selected:** {len(feature_cols)} features")
-    # if len(feature_cols) > 50:
-    #     st.info("🎯 **Using Optimized Features** - Advanced seasonal and pattern-based features detected")
-    
-    # Show sample of features for debugging
-    if len(feature_cols) > 10:
-        sample_features = feature_cols[:5] + ["..."] + feature_cols[-5:]
-        st.caption(f"Features: {', '.join(sample_features)}")
-    else:
-        st.caption(f"Features: {', '.join(feature_cols)}")
+    # Simple feature info
+    st.caption(f"Features: {len(feature_cols)} selected")
     
     # Prepare training data
     X_train = train_df.select(feature_cols).to_pandas()
@@ -421,299 +411,23 @@ def create_display_name(company, state, program):
     else:
         return f"{company} - {state} - {program}"
 
-def assess_data_quality(df, company, state, program, test_start="2024-10-01", test_end="2024-12-31"):
-    """Assess the quality of data for forecasting"""
-    
-    # Apply comprehensive duplicate column removal first
-    df, duplicates_removed = remove_duplicate_columns(df)
-    # Remove status message - if duplicates_removed > 0:
-    #     st.warning(f"⚠️ Removed {duplicates_removed} duplicate columns from dataset")
-    
-    # Apply filters using hierarchical data
-    from data_loader import get_hierarchical_data
-    subset = get_hierarchical_data(df, company, state, program)
-    
-    # Calculate data metrics - ensure week_start column exists and is unique
-    total_weeks = len(subset)
-    if "week_start" not in subset.columns:
-        # If week_start doesn't exist, try to find a date column
-        date_cols = [col for col in subset.columns if "date" in col.lower() or "week" in col.lower()]
-        if date_cols:
-            week_start_col = date_cols[0]
-            # Get min/max from that column
-            try:
-                date_range = subset.select([pl.min(week_start_col), pl.max(week_start_col)])
-                min_date = date_range.get_column(week_start_col).min()
-                max_date = date_range.get_column(week_start_col).max()
-            except:
-                min_date = pd.Timestamp('2020-01-01')
-                max_date = pd.Timestamp('2024-12-31')
-        else:
-            # Fallback: create dummy dates
-            min_date = pd.Timestamp('2020-01-01')
-            max_date = pd.Timestamp('2024-12-31')
-            week_start_col = None
-    else:
-        week_start_col = "week_start"
-        try:
-            date_range = subset.select([pl.min(week_start_col), pl.max(week_start_col)])
-            min_date = date_range.get_column(week_start_col).min()
-            max_date = date_range.get_column(week_start_col).max()
-        except Exception as e:
-            # Remove error message display - st.error(f"Error accessing week_start column: {str(e)}")
-            # Try to fix by removing duplicates again
-            subset, extra_duplicates = remove_duplicate_columns(subset)
-            # Remove status message - if extra_duplicates > 0:
-            #     st.info(f"Removed {extra_duplicates} additional duplicate columns")
-            try:
-                date_range = subset.select([pl.min(week_start_col), pl.max(week_start_col)])
-                min_date = date_range.get_column(week_start_col).min()
-                max_date = date_range.get_column(week_start_col).max()
-            except:
-                min_date = pd.Timestamp('2020-01-01')
-                max_date = pd.Timestamp('2024-12-31')
-    
-    # Calculate test period
-    test_start_date = pd.to_datetime(test_start).date()
-    test_end_date = pd.to_datetime(test_end).date()
-    
-    # Use the correct date column for filtering
-    if "week_start" in subset.columns:
-        train_weeks = len(subset.filter(pl.col("week_start") < test_start_date))
-        test_weeks = len(subset.filter(
-            (pl.col("week_start") >= test_start_date) & 
-            (pl.col("week_start") <= test_end_date)
-        ))
-    else:
-        # Fallback calculations if no date column
-        train_weeks = max(total_weeks - 14, 0)  # Assume last 14 weeks for test
-        test_weeks = min(14, total_weeks)
-    
-    # Calculate data quality metrics - ensure session_count column exists
-    if "session_count" in subset.columns:
-        session_counts = subset.select("session_count").to_pandas()["session_count"]
-        avg_sessions = session_counts.mean()
-        std_sessions = session_counts.std()
-        zero_weeks = (session_counts == 0).sum()
-        volatility = (std_sessions / avg_sessions * 100) if avg_sessions > 0 else 0
-    else:
-        # Fallback if no session_count column
-        avg_sessions = 100.0  # Dummy value
-        volatility = 20.0     # Dummy volatility
-        zero_weeks = 0
-    
-    # Assess data quality
-    quality_issues = []
-    recommendations = []
-    
-    # Length assessment
-    if total_weeks < 20:
-        quality_issues.append(f"Very short history: {total_weeks} weeks")
-        recommendations.append("Use higher aggregation level (state/program/global)")
-    elif total_weeks < 52:
-        quality_issues.append(f"Short history: {total_weeks} weeks")
-        recommendations.append("Consider ensemble with simple methods")
-    
-    if train_weeks < 15:
-        quality_issues.append(f"Insufficient training data: {train_weeks} weeks")
-        recommendations.append("Increase aggregation level or adjust test period")
-    
-    # Data quality assessment
-    if zero_weeks > total_weeks * 0.3:
-        quality_issues.append(f"High zero rate: {zero_weeks}/{total_weeks} weeks")
-        recommendations.append("Consider data pooling or imputation")
-    
-    if volatility > 100:
-        quality_issues.append(f"High volatility: {volatility:.1f}%")
-        recommendations.append("Use robust models (Random Forest, Ridge)")
-    
-    # Determine forecasting difficulty
-    if len(quality_issues) == 0:
-        difficulty = "Easy"
-        color = "green"
-    elif len(quality_issues) <= 2:
-        difficulty = "Medium"
-        color = "orange"
-    else:
-        difficulty = "Hard"
-        color = "red"
-    
-    return {
-        "total_weeks": total_weeks,
-        "train_weeks": train_weeks,
-        "test_weeks": test_weeks,
-        "date_range": (min_date if 'min_date' in locals() else pd.Timestamp('2020-01-01'), 
-                      max_date if 'max_date' in locals() else pd.Timestamp('2024-12-31')),
-        "avg_sessions": avg_sessions,
-        "volatility": volatility,
-        "zero_weeks": zero_weeks,
-        "quality_issues": quality_issues,
-        "recommendations": recommendations,
-        "difficulty": difficulty,
-        "color": color,
-        "can_forecast": train_weeks >= 8 and test_weeks >= 1  # Minimum viable
-    }
-
-def display_data_quality_assessment(assessment):
-    """Display data quality assessment in a nice format"""
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("📊 Total Weeks", assessment["total_weeks"])
-        st.metric("🎯 Training Weeks", assessment["train_weeks"])
-        
-    with col2:
-        st.metric("📈 Avg Sessions", f"{assessment['avg_sessions']:.1f}")
-        st.metric("📉 Volatility", f"{assessment['volatility']:.1f}%")
-        
-    with col3:
-        st.metric("🔍 Test Weeks", assessment["test_weeks"])
-        st.metric("⚠️ Zero Weeks", assessment["zero_weeks"])
-    
-    # Difficulty assessment - removed per user request
-    # if assessment["color"] == "green":
-    #     st.success(f"✅ **Forecasting Difficulty: {assessment['difficulty']}**")
-    # elif assessment["color"] == "orange":
-    #     st.warning(f"⚠️ **Forecasting Difficulty: {assessment['difficulty']}**")
-    # else:
-    #     st.error(f"🚨 **Forecasting Difficulty: {assessment['difficulty']}**")
-    
-    # Issues and recommendations
-    if assessment["quality_issues"]:
-        st.subheader("🔍 Data Quality Issues")
-        for issue in assessment["quality_issues"]:
-            st.error(f"• {issue}")
-    
-    if assessment["recommendations"]:
-        st.subheader("💡 Recommendations")
-        for rec in assessment["recommendations"]:
-            st.info(f"• {rec}")
-
 def smart_data_preparation(df, company, state, program, test_start="2024-10-01", test_end="2024-12-31"):
-    """Smart data preparation that handles short data series intelligently"""
+    """Simplified data preparation"""
     
-    # First create features if they don't exist
+    # Create features if they don't exist
     from feature_engineering import create_features
     
-    # Check if features already exist (like lag_1, rolling_mean_4, etc.)
+    # Check if features already exist
     has_features = any(col.startswith(('lag_', 'rolling_', 'momentum_', 'trend_')) for col in df.columns)
     
     if not has_features:
-        # Create features for the data
-        df = create_features(df, optimized=False)  # Use base features for smart preparation
+        df = create_features(df, optimized=False)
     
-    # Apply comprehensive duplicate column removal after feature creation
-    df, duplicates_removed = remove_duplicate_columns(df)
-    # Remove status message - if duplicates_removed > 0:
-    #     st.warning(f"⚠️ Removed {duplicates_removed} duplicate columns after feature creation")
+    # Remove duplicate columns
+    df, _ = remove_duplicate_columns(df)
     
-    # First assess data quality
-    assessment = assess_data_quality(df, company, state, program, test_start, test_end)
-    
-    # Display assessment
-    with st.expander("📊 Data Quality Assessment", expanded=True):
-        display_data_quality_assessment(assessment)
-    
-    # If data is too short, recommend higher aggregation
-    if not assessment["can_forecast"]:
-        st.error("❌ **Cannot forecast with current selection**")
-        # Remove verbose messages
-        # st.info("**Automatic Escalation:** Trying higher aggregation levels...")
-        
-        # Try different aggregation levels
-        if company != "ALL COMPANIES":
-            # Try company-level aggregation
-            # st.info("🔄 Trying company-level aggregation...")
-            return prepare_aggregated_data(df, company, "ALL STATES", "ALL PROGRAMS", "Company Total", test_start, test_end)
-        else:
-            # Try global aggregation
-            # st.info("🔄 Trying global aggregation...")
-            return prepare_aggregated_data(df, company, state, program, "Global Total", test_start, test_end)
-    
-    # If data is short but viable, use adaptive approach
-    if assessment["difficulty"] == "Hard":
-        st.warning("🤖 **Using Adaptive Approach for Short Data**")
-        # Use simpler feature set and ensemble approach
-        return prepare_model_data_adaptive(df, company, state, program, test_start, test_end, assessment)
-    
-    # Use normal approach for good data
+    # Use standard preparation
     return prepare_model_data(df, company, state, program, test_start, test_end)
-
-def prepare_model_data_adaptive(df, company, state, program, test_start="2024-10-01", test_end="2024-12-31", assessment=None):
-    """Adaptive data preparation for short/difficult series"""
-    
-    # Filter for specific combination
-    subset = df.filter(
-        (pl.col("company") == company) &
-        (pl.col("state") == state) &
-        (pl.col("program") == program)
-    )
-    
-    # Split train/test
-    test_start_date = pd.to_datetime(test_start).date()
-    test_end_date = pd.to_datetime(test_end).date()
-    train_mask = subset.get_column("week_start") < test_start_date
-    test_mask = (subset.get_column("week_start") >= test_start_date) & (subset.get_column("week_start") <= test_end_date)
-    train_df = subset.filter(pl.Series(train_mask))
-    test_df = subset.filter(pl.Series(test_mask))
-    
-    # Use simplified features for short series
-    if len(train_df) < 26:  # Less than 6 months
-        # Use only most robust features
-        feature_cols = [
-            "lag_1", "lag_2", "lag_4",  # Basic lags
-            "rolling_mean_4", "rolling_mean_8",  # Short-term patterns
-            "week_of_year", "month", "quarter",  # Seasonality
-            "is_winter", "is_spring", "is_summer", "is_fall"  # Seasonal indicators
-        ]
-        # Remove status message - st.info("🎯 **Using Simplified Features** for short data series")
-    else:
-        # Use extended but conservative features
-        feature_cols = [
-            "lag_1", "lag_2", "lag_4", "lag_8", "lag_12",
-            "rolling_mean_4", "rolling_mean_8", "rolling_mean_12",
-            "rolling_std_4", "rolling_std_8",
-            "week_of_year", "month", "quarter",
-            "is_winter", "is_spring", "is_summer", "is_fall",
-            "momentum_4w", "trend_4w"
-        ]
-        # Remove status message - st.info("🎯 **Using Conservative Features** for medium-length series")
-    
-    # Filter features to only include those that exist
-    available_features = [col for col in feature_cols if col in train_df.columns]
-    
-    if len(available_features) < 5:
-        st.warning("⚠️ **Very few features available, using basic lag features only**")
-        # Fall back to basic lag features
-        basic_lags = [col for col in ["lag_1", "lag_2", "lag_4"] if col in train_df.columns]
-        if len(basic_lags) > 0:
-            available_features = basic_lags
-        else:
-            st.error("❌ No suitable features found")
-            return None, None, None, None, None
-    
-    # Prepare data
-    X_train = train_df.select(available_features).to_pandas()
-    y_train = train_df.select("session_count").to_pandas().values.ravel()
-    X_test = test_df.select(available_features).to_pandas()
-    y_test = test_df.select("session_count").to_pandas().values.ravel()
-    
-    # Clean data
-    X_train = X_train.fillna(0)
-    X_test = X_test.fillna(0)
-    
-    # Remove infinite values
-    X_train = X_train.replace([np.inf, -np.inf], 0)
-    X_test = X_test.replace([np.inf, -np.inf], 0)
-    
-    # Time series data for statistical models
-    ts_data = train_df.select(["week_start", "session_count"]).to_pandas()
-    ts_data = ts_data.set_index("week_start")["session_count"].fillna(0)
-    
-    # Remove status message - st.success(f"✅ **Adaptive Preparation Complete:** {len(available_features)} features, {len(X_train)} training samples")
-    
-    return X_train, y_train, X_test, y_test, ts_data
 
 def remove_duplicate_columns(df):
     """Comprehensive duplicate column removal for polars dataframes"""

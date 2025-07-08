@@ -18,9 +18,7 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
     use_optimized = False
     
     # Remove any duplicate columns at the start
-    df, duplicates_removed = remove_duplicate_columns(df)
-    if duplicates_removed > 0:
-        st.warning(f"⚠️ Removed {duplicates_removed} duplicate columns from input data")
+    df, _ = remove_duplicate_columns(df)
     
     # Create display name
     display_name = create_display_name(selected_company, selected_state, selected_program)
@@ -29,9 +27,7 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
         df_features = create_features(df, optimized=use_optimized)
         
         # Remove duplicates after feature creation as well
-        df_features, feature_duplicates = remove_duplicate_columns(df_features)
-        if feature_duplicates > 0:
-            st.warning(f"⚠️ Removed {feature_duplicates} duplicate columns after feature creation")
+        df_features, _ = remove_duplicate_columns(df_features)
     
     # Determine aggregation level (same logic as weekly)
     aggregation_level = get_aggregation_level(selected_company, selected_state, selected_program)
