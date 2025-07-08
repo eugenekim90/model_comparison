@@ -179,19 +179,85 @@ def run_models(X_train, y_train, X_test, ts_data, models_to_run, use_optimized=T
         except Exception as e:
             st.error(f"ETS failed: {str(e)}")
     
-    # Nixtla Models (TimeGPT, Statistical, AutoML)
-    nixtla_models = [model for model in models_to_run if model in ["TimeGPT", "Nixtla Statistical", "Nixtla AutoML"]]
-    if nixtla_models and NIXTLA_MODELS_AVAILABLE:
+    # TimeGPT (Nixtla)
+    if "TimeGPT" in models_to_run:
         try:
-            # Remove verbose Nixtla messages
-            nixtla_results = run_nixtla_models(ts_data, forecast_periods, nixtla_models)
-            results.update(nixtla_results)
+            from nixtla import NixtlaClient
+            # Check API key
+            api_key = st.session_state.get('nixtla_api_key', '')
+            if not api_key or api_key.strip() == '':
+                st.error("⚠️ TimeGPT requires Nixtla API key. Please enter your API key in the sidebar.")
+                results["TimeGPT"] = {"predictions": None, "model": None, "feature_names": [], "error": "API key required"}
+            else:
+                # Use the API key
+                nixtla_client = NixtlaClient(api_key=api_key.strip())
+                
+                # Prepare data for Nixtla (ts_data is a pandas Series)
+                forecast_df = ts_data.reset_index()
+                forecast_df.columns = ['ds', 'y']
+                forecast_df['unique_id'] = 'series_1'
+                forecast_df = forecast_df[['unique_id', 'ds', 'y']]
+                
+                # Make forecast
+                forecast = nixtla_client.forecast(
+                    df=forecast_df,
+                    h=forecast_periods,
+                    time_col='ds',
+                    target_col='y'
+                )
+                pred = forecast['TimeGPT'].values
+                
+                pred = np.maximum(pred, 0)
+                results["TimeGPT"] = {"predictions": pred, "model": None, "feature_names": []}
             
         except Exception as e:
-            st.error(f"Nixtla models failed: {str(e)}")
+            st.error(f"TimeGPT failed: {str(e)}")
+            results["TimeGPT"] = {"predictions": None, "model": None, "feature_names": [], "error": str(e)}
+
+    # Nixtla AutoML
+    if "Nixtla AutoML" in models_to_run:
+        try:
+            from nixtla import NixtlaClient
+            # Check API key
+            api_key = st.session_state.get('nixtla_api_key', '')
+            if not api_key or api_key.strip() == '':
+                st.error("⚠️ Nixtla AutoML requires Nixtla API key. Please enter your API key in the sidebar.")
+                results["Nixtla AutoML"] = {"predictions": None, "model": None, "feature_names": [], "error": "API key required"}
+            else:
+                # Use the API key
+                nixtla_client = NixtlaClient(api_key=api_key.strip())
+                
+                # Prepare data for Nixtla (ts_data is a pandas Series)
+                forecast_df = ts_data.reset_index()
+                forecast_df.columns = ['ds', 'y']
+                forecast_df['unique_id'] = 'series_1'
+                forecast_df = forecast_df[['unique_id', 'ds', 'y']]
+                
+                # Make forecast
+                forecast = nixtla_client.forecast(
+                    df=forecast_df,
+                    h=forecast_periods,
+                    time_col='ds',
+                    target_col='y',
+                    model='timegpt-1-long-horizon'
+                )
+                pred = forecast['TimeGPT'].values
+                
+                pred = np.maximum(pred, 0)
+                results["Nixtla AutoML"] = {"predictions": pred, "model": None, "feature_names": []}
+            
+        except Exception as e:
+            st.error(f"Nixtla AutoML failed: {str(e)}")
+            results["Nixtla AutoML"] = {"predictions": None, "model": None, "feature_names": [], "error": str(e)}
     
-    elif nixtla_models and not NIXTLA_MODELS_AVAILABLE:
-        st.warning("⚠️ Nixtla models selected but not available. Please install nixtla package.")
+    # Legacy Nixtla Models (if needed)
+    nixtla_models = [model for model in models_to_run if model in ["Nixtla Statistical"]]
+    if nixtla_models and NIXTLA_MODELS_AVAILABLE:
+        try:
+            nixtla_results = run_nixtla_models(ts_data, forecast_periods, nixtla_models)
+            results.update(nixtla_results)
+        except Exception:
+            pass
     
     return results
 

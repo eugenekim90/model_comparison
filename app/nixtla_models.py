@@ -18,7 +18,6 @@ try:
     NIXTLA_AVAILABLE = True
 except ImportError:
     NIXTLA_AVAILABLE = False
-    st.error("Nixtla package not found. Please install with: pip install nixtla")
 
 def get_nixtla_client():
     """Get Nixtla client with API key"""

@@ -5,7 +5,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 from feature_engineering import create_features
-from data_preparation import prepare_model_data, prepare_aggregated_data, get_aggregation_level, create_display_name
+from data_preparation import prepare_model_data, prepare_aggregated_data, get_aggregation_level, create_display_name, remove_duplicate_columns
 from models import run_models
 from metrics import calculate_metrics
 from visualization import display_metrics_table, plot_metrics_comparison
@@ -17,14 +17,21 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
     # Always use base features, ignore the use_optimized parameter
     use_optimized = False
     
+    # Remove any duplicate columns at the start
+    df, duplicates_removed = remove_duplicate_columns(df)
+    if duplicates_removed > 0:
+        st.warning(f"⚠️ Removed {duplicates_removed} duplicate columns from input data")
+    
     # Create display name
     display_name = create_display_name(selected_company, selected_state, selected_program)
     
-    st.success(f"**Selected (Monthly):** {display_name}")
-    st.info("**Approach:** Weekly models → Aggregate weekly predictions → Monthly evaluation")
-    
     with st.spinner("Creating weekly features for monthly evaluation..."):
         df_features = create_features(df, optimized=use_optimized)
+        
+        # Remove duplicates after feature creation as well
+        df_features, feature_duplicates = remove_duplicate_columns(df_features)
+        if feature_duplicates > 0:
+            st.warning(f"⚠️ Removed {feature_duplicates} duplicate columns after feature creation")
     
     # Determine aggregation level (same logic as weekly)
     aggregation_level = get_aggregation_level(selected_company, selected_state, selected_program)
@@ -34,12 +41,6 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
     test_start_date = pd.to_datetime(test_split_date)
     # Convert both to date for comparison
     is_future_forecast = test_start_date.date() > data_max_date.date()
-    
-    if is_future_forecast:
-        st.warning(f"🔮 **Future Forecasting Mode**: Test period ({test_split_date}) is beyond available data ({data_max_date})")
-        st.info("**Note:** No evaluation metrics will be calculated since we're forecasting into the future")
-    else:
-        st.info(f"📊 **Historical Evaluation Mode**: Test period is within available data range")
     
     with st.spinner("Running weekly models..."):
         # Use smart data preparation for granular level
@@ -59,7 +60,6 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
         
         if is_future_forecast and (y_test is None or len(y_test) == 0):
             # For future forecasting, generate dummy test periods for prediction
-            st.info("📅 **Generating future periods for forecasting...**")
             # Calculate future weeks based on specified test end date
             future_weeks = (pd.to_datetime(test_end_date) - pd.to_datetime(test_split_date)).days // 7 + 1
             future_weeks = max(1, future_weeks)  # At least 1 week
@@ -69,8 +69,6 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
                 X_test = pd.DataFrame([X_train.iloc[-1]] * future_weeks)
                 X_test.index = range(future_weeks)
                 y_test = None  # No actual values for future
-            
-        st.info(f"Weekly Training samples: {len(X_train)} | Weekly Test/Forecast periods: {len(X_test) if X_test is not None else 0}")
         
         # Run weekly models
         weekly_model_results = run_models(X_train, y_train, X_test, ts_data, models_to_run, use_optimized)
@@ -85,7 +83,6 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
         if is_future_forecast:
             # Future forecasting mode - just show predictions
             st.header("🔮 Monthly Future Forecasting Results")
-            st.info("Showing future monthly predictions (no actuals available for comparison)")
             
             # Aggregate weekly predictions to monthly level
             monthly_predictions = {}
@@ -118,7 +115,6 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
             # Only display feature importance for granular selections in monthly future forecasting
             if selected_company != "ALL COMPANIES" and selected_state != "ALL STATES" and selected_program != "ALL PROGRAMS":
                 st.subheader("🎯 Feature Importance Analysis")
-                st.info("📊 **Granular Selection**: Showing feature importance for specific company/state/program combination")
                 _display_feature_importance(weekly_model_results, X_train.columns, use_optimized, X_train, y_train)
             else:
                 st.subheader("📈 Aggregated Monthly Future Forecasting")
@@ -129,8 +125,6 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
                     aggregation_parts.append("all states")
                 if selected_program == "ALL PROGRAMS":
                     aggregation_parts.append("all programs")
-                
-                st.info(f"🌐 **Aggregated Monthly Forecast**: Predicting combined monthly values across {', '.join(aggregation_parts)}. Weekly models are trained on temporal patterns, then predictions are aggregated to monthly level.")
                 
                 with st.expander("🔧 Monthly Aggregation Process"):
                     st.markdown("""
@@ -168,7 +162,6 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
             
             # Display monthly metrics table
             st.header("📊 Monthly Model Performance Metrics")
-            st.info("Metrics calculated on monthly aggregated predictions vs monthly aggregated actuals")
             
             display_metrics_table(model_metrics, is_monthly=True)
             
@@ -196,7 +189,6 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
             # Only display feature importance for granular selections in monthly historical evaluation
             if selected_company != "ALL COMPANIES" and selected_state != "ALL STATES" and selected_program != "ALL PROGRAMS":
                 st.subheader("🎯 Feature Importance Analysis")
-                st.info("📊 **Granular Selection**: Showing feature importance for specific company/state/program combination")
                 _display_feature_importance(weekly_model_results, X_train.columns, use_optimized, X_train, y_train)
             else:
                 st.subheader("📈 Aggregated Monthly Evaluation")
@@ -207,8 +199,6 @@ def monthly_forecasting(df, selected_company, selected_state, selected_program, 
                     aggregation_parts.append("all states")
                 if selected_program == "ALL PROGRAMS":
                     aggregation_parts.append("all programs")
-                
-                st.info(f"🌐 **Aggregated Monthly Evaluation**: Evaluated monthly performance across {', '.join(aggregation_parts)}. Weekly models were trained on temporal patterns and aggregated to monthly level.")
                 
                 with st.expander("🔧 Monthly Evaluation Process"):
                     st.markdown("""

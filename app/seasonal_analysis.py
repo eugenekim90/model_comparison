@@ -14,10 +14,10 @@ import warnings
 warnings.filterwarnings('ignore')
 
 def seasonal_analysis_dashboard(df):
-    """Comprehensive seasonal analysis dashboard"""
+    """Seasonal analysis dashboard"""
     
-    st.header("🌊 Advanced Seasonal Pattern Analysis")
-    st.info("Analyzing seasonal patterns, dips, and creating advanced features to capture temporal behavior")
+    st.header("🌊 Seasonal Analysis")
+    st.info("Analyzing seasonal patterns, dips, and temporal behavior")
     
     # Prepare aggregated data for analysis
     df_agg = df.group_by("week_start").agg([
@@ -32,13 +32,10 @@ def seasonal_analysis_dashboard(df):
     ts_df = ts_df.set_index('week_start')
     
     # Tabs for different analyses
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "📊 Pattern Decomposition", 
+    tab1, tab2, tab3 = st.tabs([
+        "📊 Pattern Analysis", 
         "🔍 Dip Analysis", 
-        "🎯 Advanced Features",
-        "📈 Seasonal Evolution",
-        "🧪 Feature Testing",
-        "🚨 Anomaly Detection"
+        "🎯 Features"
     ])
     
     with tab1:
@@ -48,21 +45,34 @@ def seasonal_analysis_dashboard(df):
         dip_analysis(ts_df)
     
     with tab3:
-        advanced_features_analysis(ts_df, df)
-    
-    with tab4:
-        seasonal_evolution_analysis(ts_df)
-    
-    with tab5:
-        feature_testing_analysis(ts_df, df)
-    
-    with tab6:
-        anomaly_detection_analysis(ts_df)
+        features_analysis(ts_df, df)
 
 def pattern_decomposition_analysis(ts_df):
-    """Decompose time series into trend, seasonal, and residual components"""
+    """Analyze time series patterns using decomposition"""
     
-    st.subheader("📊 Time Series Decomposition")
+    st.subheader("🔍 Pattern Decomposition Analysis")
+    
+    # Check data sufficiency for decomposition
+    data_length = len(ts_df)
+    
+    # Adaptive period selection based on data length
+    if data_length >= 104:  # 2 complete years
+        period = 52
+        period_name = "yearly"
+    elif data_length >= 52:  # 1 complete year
+        period = 26  # Semi-annual
+        period_name = "semi-annual"
+    elif data_length >= 26:  # Half year
+        period = 13  # Quarterly
+        period_name = "quarterly"
+    elif data_length >= 12:  # Quarter
+        period = 6   # Bi-monthly
+        period_name = "bi-monthly"
+    else:
+        st.warning(f"⚠️ Insufficient data for reliable seasonal decomposition ({data_length} observations). Minimum 12 observations required.")
+        return
+    
+    st.info(f"📊 Using {period_name} seasonality (period={period}) based on {data_length} data points")
     
     # Perform decomposition
     from statsmodels.tsa.seasonal import seasonal_decompose
@@ -70,71 +80,41 @@ def pattern_decomposition_analysis(ts_df):
     # Handle missing values
     ts_clean = ts_df['total_sessions'].fillna(method='ffill').fillna(method='bfill')
     
-    # Seasonal decomposition
-    decomposition = seasonal_decompose(ts_clean, model='additive', period=52)  # Weekly data, yearly seasonality
-    
-    # Create decomposition plot
-    fig = make_subplots(
-        rows=4, cols=1,
-        subplot_titles=['Original', 'Trend', 'Seasonal', 'Residual'],
-        vertical_spacing=0.08
-    )
-    
-    # Original
-    fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df['total_sessions'], 
-                            name='Original', line=dict(color='blue')), row=1, col=1)
-    
-    # Trend
-    fig.add_trace(go.Scatter(x=ts_df.index, y=decomposition.trend, 
-                            name='Trend', line=dict(color='red')), row=2, col=1)
-    
-    # Seasonal
-    fig.add_trace(go.Scatter(x=ts_df.index, y=decomposition.seasonal, 
-                            name='Seasonal', line=dict(color='green')), row=3, col=1)
-    
-    # Residual
-    fig.add_trace(go.Scatter(x=ts_df.index, y=decomposition.resid, 
-                            name='Residual', line=dict(color='orange')), row=4, col=1)
-    
-    fig.update_layout(height=800, title="Time Series Decomposition", showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Seasonal pattern analysis
-    st.subheader("🔄 Seasonal Pattern Analysis")
-    
-    # Extract seasonal patterns by month
-    ts_df_copy = ts_df.copy()
-    ts_df_copy['month'] = ts_df_copy.index.month
-    ts_df_copy['year'] = ts_df_copy.index.year
-    ts_df_copy['week_of_year'] = ts_df_copy.index.isocalendar().week
-    
-    # Monthly aggregation
-    monthly_pattern = ts_df_copy.groupby('month')['total_sessions'].agg(['mean', 'std', 'median'])
-    
-    # Weekly pattern within year
-    weekly_pattern = ts_df_copy.groupby('week_of_year')['total_sessions'].agg(['mean', 'std', 'median'])
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Monthly seasonality
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=monthly_pattern.index, y=monthly_pattern['mean'],
-                                mode='lines+markers', name='Mean',
-                                error_y=dict(type='data', array=monthly_pattern['std'])))
-        fig.update_layout(title="Average Sessions by Month", xaxis_title="Month", yaxis_title="Sessions")
+    try:
+        # Seasonal decomposition with adaptive period
+        decomposition = seasonal_decompose(ts_clean, model='additive', period=period)
+        
+        # Create decomposition plot
+        fig = make_subplots(
+            rows=4, cols=1,
+            subplot_titles=['Original', 'Trend', 'Seasonal', 'Residual'],
+            vertical_spacing=0.08
+        )
+        
+        # Original
+        fig.add_trace(go.Scatter(x=ts_df.index, y=ts_df['total_sessions'], 
+                                name='Original', line=dict(color='blue')), row=1, col=1)
+        
+        # Trend
+        fig.add_trace(go.Scatter(x=ts_df.index, y=decomposition.trend, 
+                                name='Trend', line=dict(color='red')), row=2, col=1)
+        
+        # Seasonal
+        fig.add_trace(go.Scatter(x=ts_df.index, y=decomposition.seasonal, 
+                                name='Seasonal', line=dict(color='green')), row=3, col=1)
+        
+        # Residual
+        fig.add_trace(go.Scatter(x=ts_df.index, y=decomposition.resid, 
+                                name='Residual', line=dict(color='orange')), row=4, col=1)
+        
+        fig.update_layout(height=800, title=f"Time Series Decomposition ({period_name} seasonality)", showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
+        
+    except ValueError as e:
+        st.error(f"❌ Decomposition failed: {str(e)}")
+        st.warning(f"Data may be too short or irregular for period={period}. Showing basic analysis instead.")
     
-    with col2:
-        # Weekly seasonality
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=weekly_pattern.index, y=weekly_pattern['mean'],
-                                mode='lines+markers', name='Mean',
-                                error_y=dict(type='data', array=weekly_pattern['std'])))
-        fig.update_layout(title="Average Sessions by Week of Year", xaxis_title="Week", yaxis_title="Sessions")
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Seasonal pattern analysis
+    # Seasonal pattern analysis (always show this regardless of decomposition success)
     st.subheader("🔄 Seasonal Pattern Analysis")
     
     # Extract seasonal patterns by month
@@ -253,64 +233,16 @@ def dip_analysis(ts_df):
         dip_details['deviation'] = (dip_details['deviation'] * 100).round(1)
         dip_details.columns = ['Sessions', 'Deviation %', 'Severity', 'Month', 'Quarter']
         st.dataframe(dip_details.sort_values('Deviation %'))
-    
-    if len(significant_dips) > 0:
-        # Analyze dip characteristics
-        st.subheader("📋 Dip Characteristics")
-        
-        # Add temporal features to dips
-        significant_dips['month'] = significant_dips.index.month
-        significant_dips['week_of_year'] = significant_dips.index.isocalendar().week
-        significant_dips['year'] = significant_dips.index.year
-        significant_dips['quarter'] = significant_dips.index.quarter
-        
-        # Dip timing analysis
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Monthly distribution of dips
-            monthly_dips = significant_dips['month'].value_counts().sort_index()
-            fig = px.bar(x=monthly_dips.index, y=monthly_dips.values, 
-                        title="Dips by Month", labels={'x': 'Month', 'y': 'Number of Dips'})
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            # Quarterly distribution
-            quarterly_dips = significant_dips['quarter'].value_counts().sort_index()
-            fig = px.bar(x=quarterly_dips.index, y=quarterly_dips.values,
-                        title="Dips by Quarter", labels={'x': 'Quarter', 'y': 'Number of Dips'})
-            st.plotly_chart(fig, use_container_width=True)
-        
-        # Severity analysis
-        st.subheader("⚡ Dip Severity Analysis")
-        significant_dips['severity'] = significant_dips['deviation'].abs()
-        
-        # Create severity categories
-        significant_dips['severity_category'] = pd.cut(significant_dips['severity'], 
-                                                     bins=[0, 0.4, 0.6, 1.0], 
-                                                     labels=['Moderate', 'Severe', 'Extreme'])
-        
-        severity_counts = significant_dips['severity_category'].value_counts()
-        fig = px.pie(values=severity_counts.values, names=severity_counts.index, 
-                    title="Dip Severity Distribution")
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Display dip details
-        st.subheader("📊 Dip Details")
-        dip_details = significant_dips[['total_sessions', 'deviation', 'severity_category', 'month', 'quarter']].copy()
-        dip_details['deviation'] = (dip_details['deviation'] * 100).round(1)
-        dip_details.columns = ['Sessions', 'Deviation %', 'Severity', 'Month', 'Quarter']
-        st.dataframe(dip_details.sort_values('Deviation %'))
 
-def advanced_features_analysis(ts_df, original_df):
-    """Create and analyze advanced seasonal features"""
+def features_analysis(ts_df, original_df):
+    """Create and analyze seasonal features"""
     
-    st.subheader("🎯 Advanced Seasonal Features")
+    st.subheader("🎯 Seasonal Features")
     
-    # Create comprehensive features
-    features_df = create_advanced_seasonal_features(ts_df, original_df)
+    # Create features
+    features_df = create_seasonal_features(ts_df, original_df)
     
-    st.success(f"Created {len(features_df.columns) - 4} advanced seasonal features!")
+    st.success(f"Created {len(features_df.columns) - 4} seasonal features!")
     
     # Feature categories
     st.subheader("📊 Feature Categories Created")
@@ -344,8 +276,8 @@ def advanced_features_analysis(ts_df, original_df):
     fig.update_layout(height=600)
     st.plotly_chart(fig, use_container_width=True)
 
-def create_advanced_seasonal_features(ts_df, original_df):
-    """Create comprehensive advanced seasonal features"""
+def create_seasonal_features(ts_df, original_df):
+    """Create seasonal features"""
     
     features_df = ts_df.copy()
     features_df = features_df.reset_index()
@@ -509,7 +441,7 @@ def feature_testing_analysis(ts_df, original_df):
     st.subheader("🧪 Feature Effectiveness Testing")
     
     # Create features
-    features_df = create_advanced_seasonal_features(ts_df, original_df)
+    features_df = create_seasonal_features(ts_df, original_df)
     
     # Prepare data for testing
     feature_cols = [col for col in features_df.columns if col not in ['week_start', 'total_sessions', 'total_subscribers', 'total_non_subscribers']]

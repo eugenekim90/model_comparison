@@ -1,132 +1,141 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import polars as pl
 import plotly.graph_objects as go
+import plotly.express as px
 import numpy as np
 
 def perform_eda(df, display_name, aggregation_level):
-    """Perform EDA on the selected data"""
-    st.header("📊 Exploratory Data Analysis")
-    st.markdown(f"**Analysis for:** {display_name}")
+    """Ultra minimal EDA - stats only, no plotting"""
     
-    # Basic statistics
-    col1, col2 = st.columns(2)
+    st.header("📊 EDA")
+    st.markdown(f"**Analysis:** {display_name}")
     
-    with col1:
-        st.subheader("📈 Session Count Statistics")
-        session_stats = df.select("session_count").to_pandas()["session_count"].describe()
+    try:
+        # Quick data check
+        if df.height == 0:
+            st.error("No data available")
+            return
         
-        stats_df = pd.DataFrame({
-            "Statistic": ["Count", "Mean", "Std", "Min", "25%", "50%", "75%", "Max"],
-            "Value": [
-                f"{session_stats['count']:.0f}",
-                f"{session_stats['mean']:.2f}",
-                f"{session_stats['std']:.2f}",
-                f"{session_stats['min']:.2f}",
-                f"{session_stats['25%']:.2f}",
-                f"{session_stats['50%']:.2f}",
-                f"{session_stats['75%']:.2f}",
-                f"{session_stats['max']:.2f}"
-            ]
-        })
-        st.dataframe(stats_df, use_container_width=True)
-    
-    with col2:
-        st.subheader("🔢 Additional Statistics")
-        session_data = df.select("session_count").to_pandas()["session_count"]
+        # Get target column
+        target_col = 'attended_sessions' if 'attended_sessions' in df.columns else 'session_count'
         
-        additional_stats = pd.DataFrame({
-            "Metric": ["Zero Sessions", "Non-Zero Sessions", "% Zero Sessions", "Variance", "Skewness", "Kurtosis"],
-            "Value": [
-                f"{(session_data == 0).sum():.0f}",
-                f"{(session_data > 0).sum():.0f}",
-                f"{(session_data == 0).mean() * 100:.1f}%",
-                f"{session_data.var():.2f}",
-                f"{session_data.skew():.2f}",
-                f"{session_data.kurtosis():.2f}"
-            ]
-        })
-        st.dataframe(additional_stats, use_container_width=True)
+        if target_col not in df.columns:
+            st.error(f"Column '{target_col}' not found")
+            return
+        
+        # Option to use Nixtla analysis or basic stats
+        analysis_type = st.radio(
+            "Choose Analysis Type:",
+            ["Basic Stats", "Nixtla Time Series Analysis"],
+            horizontal=True
+        )
+        
+        if analysis_type == "Basic Stats":
+            # Just basic stats - no plotting
+            with st.spinner("Loading stats..."):
+                stats = df.select([
+                    pl.count(target_col).alias("count"),
+                    pl.sum(target_col).alias("total"),
+                    pl.mean(target_col).alias("mean"),
+                    pl.min(target_col).alias("min"),
+                    pl.max(target_col).alias("max")
+                ]).to_pandas().iloc[0]
+            
+            # Show basic info only
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Records", f"{stats['count']:,}")
+            with col2:
+                st.metric("Total Sessions", f"{stats['total']:,.0f}")
+            with col3:
+                st.metric("Avg Sessions", f"{stats['mean']:.1f}")
+            with col4:
+                st.metric("Max Sessions", f"{stats['max']:,.0f}")
+            
+            # Text summary only - no plots
+            st.subheader("📊 Summary")
+            
+            st.write(f"**Dataset:** {stats['count']:,} records")
+            st.write(f"**Total Sessions:** {stats['total']:,.0f}")
+            st.write(f"**Average per Week:** {stats['mean']:.1f}")
+            st.write(f"**Range:** {stats['min']:.0f} to {stats['max']:.0f}")
+            
+            # Date range if available
+            try:
+                date_stats = df.select([
+                    pl.min("week_start").alias("start_date"),
+                    pl.max("week_start").alias("end_date")
+                ]).to_pandas().iloc[0]
+                
+                st.write(f"**Date Range:** {date_stats['start_date']} to {date_stats['end_date']}")
+            except:
+                pass
+        
+        else:
+            # Nixtla Time Series Analysis
+            api_key = st.session_state.get('nixtla_api_key', '')
+            if not api_key:
+                st.warning("⚠️ Nixtla API key required for time series analysis. Please enter your API key in the sidebar.")
+            else:
+                try:
+                    from nixtla import NixtlaClient
+                    
+                    with st.spinner("Running Nixtla time series analysis..."):
+                        # Prepare data for Nixtla
+                        ts_df = df.select([
+                            pl.col("week_start").alias("ds"),
+                            pl.col(target_col).alias("y")
+                        ]).to_pandas()
+                        ts_df['unique_id'] = 'series_1'
+                        ts_df = ts_df[['unique_id', 'ds', 'y']]
+                        
+                        # Initialize client
+                        client = NixtlaClient(api_key=api_key)
+                        
+                        # Run descriptive analysis
+                        summary = client.describe(ts_df)
+                        st.subheader("📊 Nixtla Time Series Summary")
+                        st.dataframe(summary, use_container_width=True)
+                        
+                        # Plot using Nixtla
+                        fig = client.plot(ts_df, engine='plotly')
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                except Exception as e:
+                    st.error(f"Nixtla analysis failed: {str(e)}")
+                    st.info("Falling back to basic stats...")
+                    # Fall back to basic analysis
+                    perform_basic_stats(df, target_col)
+        
+        st.success("✅ EDA completed!")
+        
+    except Exception as e:
+        st.error(f"EDA Error: {str(e)}")
+
+def perform_basic_stats(df, target_col):
+    """Helper function for basic stats"""
+    stats = df.select([
+        pl.count(target_col).alias("count"),
+        pl.sum(target_col).alias("total"),
+        pl.mean(target_col).alias("mean"),
+        pl.min(target_col).alias("min"),
+        pl.max(target_col).alias("max")
+    ]).to_pandas().iloc[0]
     
-    # Time series plot
-    st.subheader("📈 Session Count Over Time")
-    df_pandas = df.to_pandas()
-    df_pandas["week_start"] = pd.to_datetime(df_pandas["week_start"])
-    df_pandas = df_pandas.sort_values("week_start")  # Ensure proper sorting
-    
-    fig = px.line(
-        df_pandas,
-        x="week_start",
-        y="session_count",
-        title=f"Session Count by Week - {display_name}",
-        markers=True
-    )
-    
-    fig.update_layout(
-        xaxis_title="Week",
-        yaxis_title="Session Count",
-        template='plotly_white',
-        height=400
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # Distribution plot
-    st.subheader("📊 Session Count Distribution")
-    fig_hist = px.histogram(
-        df_pandas, 
-        x="session_count", 
-        nbins=30,
-        title=f"Session Count Distribution - {display_name}"
-    )
-    fig_hist.update_layout(template='plotly_white')
-    st.plotly_chart(fig_hist, use_container_width=True)
-    
-    # Seasonal patterns
-    st.subheader("🗓️ Seasonal Patterns")
-    df_pandas['month'] = df_pandas['week_start'].dt.month
-    df_pandas['quarter'] = df_pandas['week_start'].dt.quarter
-    df_pandas['year'] = df_pandas['week_start'].dt.year
-    
-    col1, col2 = st.columns(2)
-    
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        # Monthly averages
-        monthly_avg = df_pandas.groupby('month')['session_count'].mean().reset_index()
-        fig_monthly = px.bar(
-            monthly_avg, 
-            x='month', 
-            y='session_count',
-            title="Average Sessions by Month"
-        )
-        fig_monthly.update_layout(template='plotly_white')
-        st.plotly_chart(fig_monthly, use_container_width=True)
-    
+        st.metric("Records", f"{stats['count']:,}")
     with col2:
-        # Quarterly averages
-        quarterly_avg = df_pandas.groupby('quarter')['session_count'].mean().reset_index()
-        fig_quarterly = px.bar(
-            quarterly_avg, 
-            x='quarter', 
-            y='session_count',
-            title="Average Sessions by Quarter"
-        )
-        fig_quarterly.update_layout(template='plotly_white')
-        st.plotly_chart(fig_quarterly, use_container_width=True)
-    
-    # Yearly trend
-    if len(df_pandas['year'].unique()) > 1:
-        st.subheader("📅 Yearly Trend")
-        yearly_avg = df_pandas.groupby('year')['session_count'].mean().reset_index()
-        fig_yearly = px.line(
-            yearly_avg, 
-            x='year', 
-            y='session_count',
-            title="Average Sessions by Year",
-            markers=True
-        )
-        fig_yearly.update_layout(template='plotly_white')
-        st.plotly_chart(fig_yearly, use_container_width=True)
+        st.metric("Total Sessions", f"{stats['total']:,.0f}")
+    with col3:
+        st.metric("Avg Sessions", f"{stats['mean']:.1f}")
+    with col4:
+        st.metric("Max Sessions", f"{stats['max']:,.0f}")
+
+def perform_comprehensive_eda(df, display_name, aggregation_level):
+    """Backward compatibility - just call simple EDA"""
+    return perform_eda(df, display_name, aggregation_level)
 
 def plot_forecast_results(y_test, model_results, test_dates, title="Model Predictions vs Actual"):
     """Create forecast visualization"""
