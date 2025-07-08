@@ -283,27 +283,84 @@ def plot_prediction_scatter(y_true, y_pred, model_name):
     return fig
 
 def display_metrics_table(model_metrics, is_monthly=False):
-    """Display metrics in a formatted table"""
+    """Display metrics in a formatted table with top 2 models highlighted"""
+    # Find the best and second-best models for each metric (lowest values)
+    best_models = {}
+    second_best_models = {}
+    
+    for metric in ['MAE', 'RMSE', 'MAPE', 'WMAPE']:
+        metric_values = {model: metrics[metric] for model, metrics in model_metrics.items()}
+        sorted_models = sorted(metric_values.items(), key=lambda x: x[1])
+        
+        best_models[metric] = sorted_models[0][0]  # Best model
+        if len(sorted_models) > 1:
+            second_best_models[metric] = sorted_models[1][0]  # Second best
+        else:
+            second_best_models[metric] = None
+    
+    # Create formatted data
     metrics_data = []
+    raw_data = []  # Keep raw values for highlighting
+    
     for model_name, metrics in model_metrics.items():
         if is_monthly:
-            metrics_data.append({
+            formatted_row = {
                 "Model": model_name,
-                "MAE": f"{metrics['MAE']:.0f}",  # Monthly values are larger
+                "MAE": f"{metrics['MAE']:.0f}",
                 "RMSE": f"{metrics['RMSE']:.0f}",
                 "MAPE": f"{metrics['MAPE']:.1f}%",
                 "WMAPE": f"{metrics['WMAPE']:.1f}%"
-            })
+            }
         else:
-            metrics_data.append({
+            formatted_row = {
                 "Model": model_name,
                 "MAE": f"{metrics['MAE']:.2f}",
                 "RMSE": f"{metrics['RMSE']:.2f}",
                 "MAPE": f"{metrics['MAPE']:.1f}%",
                 "WMAPE": f"{metrics['WMAPE']:.1f}%"
-            })
+            }
+        
+        # Add highlighting indicators for best and second-best models
+        for metric in ['MAE', 'RMSE', 'MAPE', 'WMAPE']:
+            if model_name == best_models[metric]:
+                formatted_row[metric] = f"🥇 {formatted_row[metric]}"  # Gold medal for best
+            elif model_name == second_best_models[metric]:
+                formatted_row[metric] = f"🥈 {formatted_row[metric]}"  # Silver medal for second
+        
+        metrics_data.append(formatted_row)
+        raw_data.append({
+            "Model": model_name,
+            "MAE": metrics['MAE'],
+            "RMSE": metrics['RMSE'], 
+            "MAPE": metrics['MAPE'],
+            "WMAPE": metrics['WMAPE']
+        })
     
     metrics_df = pd.DataFrame(metrics_data)
-    st.dataframe(metrics_df, use_container_width=True)
     
-    return metrics_df 
+    # Display with highlighting
+    st.markdown("**📊 Model Performance Metrics** (🥇 = Champion | 🥈 = Challenger)")
+    st.dataframe(
+        metrics_df,
+        use_container_width=True,
+        column_config={
+            "Model": st.column_config.TextColumn("Model"),
+            "MAE": st.column_config.TextColumn("MAE"),
+            "RMSE": st.column_config.TextColumn("RMSE"), 
+            "MAPE": st.column_config.TextColumn("MAPE"),
+            "WMAPE": st.column_config.TextColumn("WMAPE")
+        }
+    )
+    
+    # Show championship battle
+    champion = best_models['WMAPE']  # Use WMAPE as primary metric
+    challenger = second_best_models['WMAPE']
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.success(f"🥇 **Champion (WMAPE):** {champion}")
+    with col2:
+        if challenger:
+            st.warning(f"🥈 **Challenger (WMAPE):** {challenger}")
+    
+    return pd.DataFrame(raw_data) 
